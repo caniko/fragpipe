@@ -3,22 +3,24 @@ binary = "target/release/chessbender"
 build_command = "cargo build --release"
 project_root = "."
 assets_dir = "assets"
-local_log = "fragpipe-local.log"
+listener_log = "fragpipe-listener.log"
+joiner_log = "fragpipe-joiner.log"
 
 [[game.env]]
 name = "RUST_BACKTRACE"
 value = "1"
 
 [webrtc]
-local_ip = "10.0.0.1"
+local_ip = "127.0.0.1"
 port = 27200
 timeout_secs = 300
 max_runs = 1
 
-[[remote]]
-name = "example-peer"
-host = "example-peer"
-remote_dir = "/home/can/chessbender-fragpipe"
-log_file = "game.log"
-binary_name = "chessbender"
-assets_dir = "/home/can/chessbender-fragpipe/assets"
+# Optional two-machine validation:
+# [[remote]]
+# name = "example-peer"
+# host = "example-peer"
+# remote_dir = "/home/can/chessbender-fragpipe"
+# log_file = "game.log"
+# binary_name = "chessbender"
+# assets_dir = "/home/can/chessbender-fragpipe/assets"
