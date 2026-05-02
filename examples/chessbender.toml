@@ -1,6 +1,6 @@
 [game]
 binary = "target/release/chessbender"
-build_command = "cargo build --release"
+build_command = "nix develop -c cargo build --release"
 project_root = "."
 assets_dir = "assets"
 listener_log = "fragpipe-listener.log"
