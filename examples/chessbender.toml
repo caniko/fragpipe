@@ -5,6 +5,7 @@ project_root = "."
 assets_dir = "assets"
 listener_log = "fragpipe-listener.log"
 joiner_log = "fragpipe-joiner.log"
+host_args = ["--headless"]
 
 [[game.env]]
 name = "RUST_BACKTRACE"
