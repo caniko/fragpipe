@@ -11,7 +11,7 @@ use crate::config::{Config, RemotePeer, load_config, select_remote};
 use crate::logwatch::{LogSignal, classify_log, classify_non_success_log, read_lossy};
 use crate::process::{kill_child, remove_if_exists, run_build, spawn_logged};
 use crate::ssh;
-use crate::webrtc::{joiner_args, listener_args, parse_join_addr, rewrite_join_addr};
+use crate::webrtc::{joiner_args, listener_args, parse_join_addr_prefer_ip, rewrite_join_addr};
 
 pub struct WebRtcRunOptions {
     pub config_path: PathBuf,
@@ -227,7 +227,7 @@ fn run_one_local_inner(
     local_ip: IpAddr,
     timeout: Duration,
 ) -> Result<String> {
-    let raw_addr = wait_for_join_addr(config, listener_log, timeout)?;
+    let raw_addr = wait_for_join_addr(config, listener_log, local_ip, timeout)?;
     let join_addr = rewrite_join_addr(&raw_addr, local_ip)?;
     println!("{}{}", config.webrtc.join_addr_marker, join_addr);
     let joiner_args = joiner_args(config, &join_addr);
@@ -303,7 +303,7 @@ fn run_one_remote_inner(
     local_ip: IpAddr,
     timeout: Duration,
 ) -> Result<String> {
-    let raw_addr = wait_for_join_addr(config, listener_log, timeout)?;
+    let raw_addr = wait_for_join_addr(config, listener_log, local_ip, timeout)?;
     let join_addr = rewrite_join_addr(&raw_addr, local_ip)?;
     println!("{}{}", config.webrtc.join_addr_marker, join_addr);
     let mut args = joiner_args(config, &join_addr);
@@ -350,11 +350,18 @@ fn launch_listener(config: &Config, port: u16, log_path: &Path, dry_run: bool) -
     spawn_logged(config, &args, log_path, dry_run, "Local listening peer")
 }
 
-fn wait_for_join_addr(config: &Config, log_path: &Path, timeout: Duration) -> Result<String> {
+fn wait_for_join_addr(
+    config: &Config,
+    log_path: &Path,
+    preferred_ip: IpAddr,
+    timeout: Duration,
+) -> Result<String> {
     let started = Instant::now();
     loop {
         let text = read_lossy(log_path);
-        if let Some(addr) = parse_join_addr(&text, &config.webrtc.join_addr_marker) {
+        if let Some(addr) =
+            parse_join_addr_prefer_ip(&text, &config.webrtc.join_addr_marker, Some(preferred_ip))
+        {
             return Ok(addr);
         }
         if let Some(LogSignal::Fatal(label)) = classify_log(&config.process, &text) {

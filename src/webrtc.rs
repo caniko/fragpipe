@@ -5,13 +5,25 @@ use regex::Regex;
 
 use crate::config::Config;
 
-pub fn parse_join_addr(log: &str, marker: &str) -> Option<String> {
+pub fn parse_join_addr_prefer_ip(
+    log: &str,
+    marker: &str,
+    preferred_ip: Option<IpAddr>,
+) -> Option<String> {
     let pattern = format!(r"{}(\S+)", regex::escape(marker));
     let re = Regex::new(&pattern).ok()?;
-    re.captures_iter(log)
-        .last()
-        .and_then(|captures| captures.get(1))
-        .map(|match_| match_.as_str().to_string())
+    let mut fallback = None;
+    for captures in re.captures_iter(log) {
+        let Some(match_) = captures.get(1) else {
+            continue;
+        };
+        let addr = match_.as_str().to_string();
+        if preferred_ip.is_some_and(|ip| multiaddr_uses_ip(&addr, ip)) {
+            return Some(addr);
+        }
+        fallback = Some(addr);
+    }
+    fallback
 }
 
 pub fn rewrite_join_addr(addr: &str, local_ip: IpAddr) -> Result<String> {
@@ -92,6 +104,23 @@ fn is_non_routable_listen_ip(value: &str) -> bool {
     matches!(value, "0.0.0.0" | "127.0.0.1" | "::" | "::1" | "localhost")
 }
 
+fn multiaddr_uses_ip(addr: &str, ip: IpAddr) -> bool {
+    let expected_protocol = match ip {
+        IpAddr::V4(_) => "ip4",
+        IpAddr::V6(_) => "ip6",
+    };
+    let expected_ip = ip.to_string();
+    let parts: Vec<&str> = addr.split('/').collect();
+    let mut index = 1;
+    while index + 1 < parts.len() {
+        if parts[index] == expected_protocol && parts[index + 1] == expected_ip {
+            return true;
+        }
+        index += 2;
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -104,8 +133,21 @@ mod tests {
     fn parses_last_webrtc_join_addr() {
         let log = "noise\nWEBRTC_JOIN_ADDR=/ip4/0.0.0.0/udp/27200/webrtc-direct/certhash/abc\n";
         assert_eq!(
-            parse_join_addr(log, "WEBRTC_JOIN_ADDR=").as_deref(),
+            parse_join_addr_prefer_ip(log, "WEBRTC_JOIN_ADDR=", None).as_deref(),
             Some("/ip4/0.0.0.0/udp/27200/webrtc-direct/certhash/abc")
+        );
+    }
+
+    #[test]
+    fn prefers_configured_local_ip_when_multiple_addrs_are_logged() {
+        let log = "\
+WEBRTC_JOIN_ADDR=/ip4/127.0.0.1/udp/27200/webrtc-direct/certhash/uEiHash
+WEBRTC_JOIN_ADDR=/ip4/10.88.0.1/udp/27200/webrtc-direct/certhash/uEiHash
+";
+        assert_eq!(
+            parse_join_addr_prefer_ip(log, "WEBRTC_JOIN_ADDR=", Some("127.0.0.1".parse().unwrap()))
+                .as_deref(),
+            Some("/ip4/127.0.0.1/udp/27200/webrtc-direct/certhash/uEiHash")
         );
     }
 
