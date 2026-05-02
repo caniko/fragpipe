@@ -1,21 +1,49 @@
 [game]
+name = "chessbender"
 binary = "target/release/chessbender"
 build_command = "nix develop -c cargo build --release"
 project_root = "."
 assets_dir = "assets"
 listener_log = "fragpipe-listener.log"
 joiner_log = "fragpipe-joiner.log"
-host_args = ["--headless"]
 
 [[game.env]]
 name = "RUST_BACKTRACE"
 value = "1"
+
+[process]
+kill_name = "chessbender"
+pass_markers = ["GAME OVER"]
+fatal_markers = [
+  "[FATAL]",
+  "panic",
+  "DAG_VIOLATION",
+  "DESYNC",
+  "CONNECTION_LOST",
+  "PEER_READY_TIMEOUT",
+  "Graceful shutdown: exit_code=",
+]
 
 [webrtc]
 local_ip = "127.0.0.1"
 port = 27200
 timeout_secs = 300
 max_runs = 1
+join_addr_marker = "WEBRTC_JOIN_ADDR="
+listener_args = [
+  "--auto-host-webrtc",
+  "--webrtc-port",
+  "{port}",
+  "--auto-play",
+  "--headless",
+]
+joiner_args = [
+  "--auto-join-webrtc",
+  "--webrtc-addr",
+  "{join_addr}",
+  "--auto-play",
+  "--headless",
+]
 
 # Optional two-machine validation:
 # [[remote]]
