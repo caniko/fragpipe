@@ -3,7 +3,9 @@ name = "fragpipe"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "Bare-metal multiplayer test orchestration for Chessbender"
+description = "Bare-metal multiplayer test orchestration for games"
+
+[workspace]
 
 [dependencies]
 anyhow = "1"
