@@ -14,6 +14,8 @@ pub struct Config {
     #[serde(default)]
     pub webrtc: WebRtcConfig,
     #[serde(default)]
+    pub android: Option<AndroidConfig>,
+    #[serde(default)]
     pub remote: Vec<RemotePeer>,
     #[serde(default)]
     #[serde(rename = "steampipe_command")]
@@ -99,6 +101,47 @@ impl Default for WebRtcConfig {
             joiner_args: Vec::new(),
         }
     }
+}
+
+/// Android emulator + APK driving for the `android-1v1` runner.
+///
+/// Fragpipe boots a pre-baked AVD, installs the test-peer APK, pushes a
+/// rendezvous file with the listener's WebRTC multiaddr, fires the activity
+/// via `am start`, and tails logcat looking for the same pass/fatal markers
+/// the desktop peer emits.
+#[derive(Debug, Deserialize, Clone)]
+pub struct AndroidConfig {
+    /// AVD name (must already exist; fragpipe does not create AVDs).
+    pub avd_name: String,
+    /// Path to the test-peer APK to install on the emulator.
+    pub apk_path: PathBuf,
+    /// Application package name (e.g. `tartanoglu.chessbender.test_peer`).
+    pub package_name: String,
+    /// Fully-qualified activity name (e.g. `androidx.games.activity.GameActivity`).
+    #[serde(default = "default_android_activity")]
+    pub activity_name: String,
+    /// Logcat tag the test-peer logs under (defaults to `chessbender`).
+    #[serde(default = "default_android_log_tag")]
+    pub log_tag: String,
+    /// Path on the emulator where the listener's join address gets pushed.
+    #[serde(default = "default_android_rendezvous_path")]
+    pub rendezvous_path: String,
+    /// Path on host for the captured logcat stream — fed to the existing
+    /// classify_log marker engine the same way `joiner_log` is on desktop.
+    #[serde(default = "default_android_log")]
+    pub logcat_log: PathBuf,
+    /// Optional `emulator` binary override (defaults to `$ANDROID_SDK_ROOT/emulator/emulator`).
+    #[serde(default)]
+    pub emulator_bin: Option<PathBuf>,
+    /// Optional `adb` binary override (defaults to `$ANDROID_SDK_ROOT/platform-tools/adb`).
+    #[serde(default)]
+    pub adb_bin: Option<PathBuf>,
+    /// Extra args to pass to the emulator process (e.g. `["-no-window", "-no-audio"]`).
+    #[serde(default = "default_android_emulator_args")]
+    pub emulator_args: Vec<String>,
+    /// Seconds to wait for the emulator to reach `sys.boot_completed=1`.
+    #[serde(default = "default_android_boot_timeout_secs")]
+    pub boot_timeout_secs: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -204,6 +247,36 @@ fn default_max_runs() -> u32 {
 
 fn default_join_addr_marker() -> String {
     "WEBRTC_JOIN_ADDR=".into()
+}
+
+fn default_android_activity() -> String {
+    "androidx.games.activity.GameActivity".into()
+}
+
+fn default_android_log_tag() -> String {
+    "chessbender".into()
+}
+
+fn default_android_rendezvous_path() -> String {
+    "/data/local/tmp/chessbender-rendezvous.txt".into()
+}
+
+fn default_android_log() -> PathBuf {
+    PathBuf::from("fragpipe-android.log")
+}
+
+fn default_android_emulator_args() -> Vec<String> {
+    vec![
+        "-no-window".into(),
+        "-no-audio".into(),
+        "-no-snapshot-save".into(),
+        "-gpu".into(),
+        "swiftshader_indirect".into(),
+    ]
+}
+
+fn default_android_boot_timeout_secs() -> u64 {
+    180
 }
 
 fn default_pass_markers() -> Vec<String> {
