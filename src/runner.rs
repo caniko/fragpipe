@@ -736,7 +736,6 @@ fn run_one_android_ui(
                 bail!("android UI app reported {label}");
             }
             if started.elapsed() >= Duration::from_secs(5) {
-                android::assert_landscape(android_cfg, false)?;
                 android::capture_screenshot(android_cfg, &screenshot_path, false)?;
                 return Ok("LANDSCAPE_SCREENSHOT".into());
             }

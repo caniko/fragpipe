@@ -297,29 +297,16 @@ impl<'a> AndroidDevice<'a> {
                 data.len()
             );
         }
-        Ok(())
-    }
-
-    fn assert_landscape(&self, dry_run: bool) -> Result<()> {
-        let adb = self.adb_display()?;
-        println!("[android] {adb} shell wm size");
-        if dry_run {
-            return Ok(());
-        }
-        let output = self
-            .adb_command()?
-            .args(["shell", "wm", "size"])
-            .output()
-            .with_context(|| format!("adb wm size failed at {adb}"))?;
-        if !output.status.success() {
-            bail!("adb wm size exited with {}", output.status);
-        }
-        let text = String::from_utf8_lossy(&output.stdout);
-        let Some((width, height)) = parse_wm_size(&text) else {
-            bail!("could not parse adb wm size output: {text}");
+        let Some((width, height)) = parse_png_size(&data) else {
+            bail!("could not parse PNG dimensions from {}", path.display());
         };
         if width <= height {
-            bail!("android display is not landscape: {width}x{height}");
+            bail!(
+                "android screenshot is not landscape: {}x{} ({})",
+                width,
+                height,
+                path.display()
+            );
         }
         Ok(())
     }
@@ -400,24 +387,14 @@ pub fn capture_screenshot(cfg: &AndroidConfig, path: &Path, dry_run: bool) -> Re
     AndroidDevice::new(cfg).capture_screenshot(path, dry_run)
 }
 
-pub fn assert_landscape(cfg: &AndroidConfig, dry_run: bool) -> Result<()> {
-    AndroidDevice::new(cfg).assert_landscape(dry_run)
-}
-
-fn parse_wm_size(text: &str) -> Option<(u32, u32)> {
-    for token in text.split_whitespace() {
-        let Some((left, right)) = token.split_once('x') else {
-            continue;
-        };
-        let Ok(width) = left.parse() else {
-            continue;
-        };
-        let Ok(height) = right.parse() else {
-            continue;
-        };
-        return Some((width, height));
+fn parse_png_size(data: &[u8]) -> Option<(u32, u32)> {
+    let png_header = b"\x89PNG\r\n\x1a\n";
+    if data.len() < 24 || !data.starts_with(png_header) || &data[12..16] != b"IHDR" {
+        return None;
     }
-    None
+    let width = u32::from_be_bytes(data[16..20].try_into().ok()?);
+    let height = u32::from_be_bytes(data[20..24].try_into().ok()?);
+    Some((width, height))
 }
 
 /// Cleanly tear down the emulator: tell adb to kill the emulator service,
@@ -575,22 +552,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_wm_size_extracts_physical_size() {
-        assert_eq!(
-            parse_wm_size("Physical size: 2400x1080\n"),
-            Some((2400, 1080))
-        );
-    }
-
-    #[test]
-    fn parse_wm_size_extracts_override_size() {
-        assert_eq!(
-            parse_wm_size("Override size: 1280x720\nPhysical density: 420\n"),
-            Some((1280, 720))
-        );
-    }
-
-    #[test]
     fn rendezvous_contents_roundtrip_through_temp_path() {
         // White-box check: the production code stages contents into a tempfile
         // before adb-pushing it. The temp filename uses the process id so two
@@ -606,5 +567,20 @@ mod tests {
                 .contains(&std::process::id().to_string()),
             "tempfile name should include the pid for collision avoidance"
         );
+    }
+
+    #[test]
+    fn parse_png_size_reads_ihdr_dimensions() {
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        png.extend_from_slice(&1920u32.to_be_bytes());
+        png.extend_from_slice(&1080u32.to_be_bytes());
+        png.extend_from_slice(&[8, 6, 0, 0, 0]);
+
+        assert_eq!(parse_png_size(&png), Some((1920, 1080)));
+    }
+
+    #[test]
+    fn parse_png_size_rejects_non_png_bytes() {
+        assert_eq!(parse_png_size(b"not a png"), None);
     }
 }
