@@ -49,6 +49,23 @@ pub fn emulator_bin(cfg: &AndroidConfig) -> Result<PathBuf> {
     resolve_sdk_bin(cfg.emulator_bin.as_deref(), "emulator", "emulator")
 }
 
+pub fn list_avds(cfg: &AndroidConfig) -> Result<Vec<String>> {
+    let emulator = emulator_bin(cfg)?;
+    let output = Command::new(&emulator)
+        .arg("-list-avds")
+        .output()
+        .with_context(|| format!("failed to list AVDs with {}", emulator.display()))?;
+    if !output.status.success() {
+        bail!("emulator -list-avds exited with {}", output.status);
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
 struct AndroidDevice<'a> {
     cfg: &'a AndroidConfig,
 }

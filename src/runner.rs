@@ -608,6 +608,18 @@ pub fn run_android_doctor(options: AndroidDoctorOptions) -> Result<()> {
     android::adb_bin(&android_cfg)?;
     if android_cfg.target == AndroidTarget::Emulator {
         android::emulator_bin(&android_cfg)?;
+        let avds = android::list_avds(&android_cfg)?;
+        if !avds.iter().any(|avd| avd == &android_cfg.avd_name) {
+            bail!(
+                "configured AVD `{}` is not available; emulator -list-avds returned: {}",
+                android_cfg.avd_name,
+                if avds.is_empty() {
+                    "<none>".to_string()
+                } else {
+                    avds.join(", ")
+                }
+            );
+        }
         println!("avd: {}", android_cfg.avd_name);
     } else if android_cfg.adb_serial.is_none() {
         bail!("device target requires adb_serial or --adb-serial");
