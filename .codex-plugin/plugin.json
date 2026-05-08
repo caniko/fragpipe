@@ -1,0 +1,31 @@
+{
+  "name": "fragpipe",
+  "version": "0.1.0",
+  "description": "Fragpipe CLI, MCP tools, and fix-loop skills for smoke-test orchestration",
+  "author": {
+    "name": "caniko",
+    "email": "caniko@users.noreply.codeberg.org",
+    "url": "https://codeberg.org/caniko"
+  },
+  "homepage": "https://codeberg.org/caniko/fragpipe",
+  "repository": "https://codeberg.org/caniko/fragpipe",
+  "license": "MIT",
+  "keywords": ["fragpipe", "mcp", "android", "webrtc", "fix-loop"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Fragpipe",
+    "shortDescription": "Run fragpipe smoke tests and fix loops.",
+    "longDescription": "CLI, MCP server, and skills for running fragpipe native WebRTC, Android WebRTC, Android UI, and cross-platform fix loops from Codex.",
+    "developerName": "caniko",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive", "Write"],
+    "websiteURL": "https://codeberg.org/caniko/fragpipe",
+    "defaultPrompt": [
+      "Run a fragpipe Android UI smoke test.",
+      "Run the cross-platform fragpipe matrix.",
+      "Diagnose a failing fragpipe 1v1 loop."
+    ],
+    "brandColor": "#2563EB"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "fragpipe": {
+      "type": "stdio",
+      "command": "nix",
+      "args": ["run", "git+ssh://git@codeberg.org/caniko/fragpipe.git#fragpipe-mcp"]
+    }
+  }
+}

@@ -49,3 +49,18 @@ configuration before running a loop:
 ```bash
 fragpipe android-doctor --config examples/chessbender.toml
 ```
+
+## MCP and Codex Plugin
+
+Fragpipe also ships a `fragpipe-mcp` binary plus Codex plugin metadata. The MCP
+server exposes the same fix-loop surface for native WebRTC, Android WebRTC,
+Android UI, Android doctor, and cross-platform matrix runs.
+
+Run the packaged MCP server with:
+
+```bash
+nix run git+ssh://git@codeberg.org/caniko/fragpipe.git#fragpipe-mcp
+```
+
+The plugin manifest lives at `.codex-plugin/plugin.json`, the MCP server config
+lives at `.mcp.json`, and fix-loop skills live under `skills/`.

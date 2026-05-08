@@ -36,15 +36,42 @@
 
       cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
-      package = craneLib.buildPackage (commonArgs
+      fragpipePackage = craneLib.buildPackage (commonArgs
         // {
           inherit cargoArtifacts;
+          cargoExtraArgs = "--bin fragpipe";
+        });
+      fragpipeMcpPackage = craneLib.buildPackage (commonArgs
+        // {
+          inherit cargoArtifacts;
+          pname = "fragpipe-mcp";
+          cargoExtraArgs = "--bin fragpipe-mcp";
         });
     in {
-      packages.default = package;
+      packages = {
+        default = fragpipePackage;
+        fragpipe = fragpipePackage;
+        fragpipe-mcp = fragpipeMcpPackage;
+      };
+
+      apps = {
+        default = {
+          type = "app";
+          program = "${fragpipePackage}/bin/fragpipe";
+        };
+        fragpipe = {
+          type = "app";
+          program = "${fragpipePackage}/bin/fragpipe";
+        };
+        fragpipe-mcp = {
+          type = "app";
+          program = "${fragpipeMcpPackage}/bin/fragpipe-mcp";
+        };
+      };
 
       checks = {
-        default = package;
+        default = fragpipePackage;
+        fragpipe-mcp = fragpipeMcpPackage;
 
         clippy = craneLib.cargoClippy (commonArgs
           // {
