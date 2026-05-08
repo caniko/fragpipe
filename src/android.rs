@@ -79,13 +79,31 @@ impl<'a> AndroidDevice<'a> {
 
     fn wait_until_booted(&self, timeout: Duration) -> Result<()> {
         let adb = self.adb_display()?;
-        println!("[android] {adb} wait-for-device");
-        self.adb_command()?
-            .arg("wait-for-device")
-            .status()
-            .with_context(|| format!("failed to invoke adb at {adb}"))?;
-
         let started = Instant::now();
+
+        println!("[android] {adb} wait-for-device");
+        let mut wait = self
+            .adb_command()?
+            .arg("wait-for-device")
+            .spawn()
+            .with_context(|| format!("failed to invoke adb at {adb}"))?;
+        loop {
+            if let Some(status) = wait
+                .try_wait()
+                .context("failed to poll adb wait-for-device")?
+            {
+                if !status.success() {
+                    bail!("adb wait-for-device exited with {status}");
+                }
+                break;
+            }
+            if started.elapsed() > timeout {
+                kill_child(&mut wait);
+                bail!("adb wait-for-device timed out after {}s", timeout.as_secs());
+            }
+            thread::sleep(Duration::from_millis(250));
+        }
+
         loop {
             let output = self
                 .adb_command()?
