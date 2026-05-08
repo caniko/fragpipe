@@ -41,12 +41,19 @@
           inherit cargoArtifacts;
           cargoExtraArgs = "--bin fragpipe";
         });
-      fragpipeMcpPackage = craneLib.buildPackage (commonArgs
+      rawFragpipeMcpPackage = craneLib.buildPackage (commonArgs
         // {
           inherit cargoArtifacts;
           pname = "fragpipe-mcp";
           cargoExtraArgs = "--bin fragpipe-mcp";
         });
+      fragpipeMcpPackage = pkgs.writeShellApplication {
+        name = "fragpipe-mcp";
+        runtimeInputs = [fragpipePackage];
+        text = ''
+          exec ${rawFragpipeMcpPackage}/bin/fragpipe-mcp "$@"
+        '';
+      };
     in {
       packages = {
         default = fragpipePackage;
@@ -71,7 +78,7 @@
 
       checks = {
         default = fragpipePackage;
-        fragpipe-mcp = fragpipeMcpPackage;
+        fragpipe-mcp = rawFragpipeMcpPackage;
 
         clippy = craneLib.cargoClippy (commonArgs
           // {
