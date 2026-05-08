@@ -11,15 +11,19 @@ pub fn run_build(config: &Config, dry_run: bool) -> Result<()> {
     let Some(command) = config.game.build_command.as_deref() else {
         return Ok(());
     };
-    println!("==> Building: {command}");
+    run_shell_command("Building", command, project_root(config), dry_run)
+}
+
+pub fn run_shell_command(label: &str, command: &str, cwd: &Path, dry_run: bool) -> Result<()> {
+    println!("==> {label}: {command}");
     if dry_run {
         return Ok(());
     }
     let status = shell_command(command)
-        .current_dir(project_root(config))
+        .current_dir(cwd)
         .status()
-        .context("failed to run build command")?;
-    ensure_success(status, "build command")
+        .with_context(|| format!("failed to run {label} command"))?;
+    ensure_success(status, label)
 }
 
 pub fn spawn_logged(

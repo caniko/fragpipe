@@ -1,5 +1,5 @@
 {
-  description = "Bare-metal multiplayer test orchestration for Chessbender";
+  description = "Bare-metal multiplayer and Android device test orchestration";
 
   inputs = {
     rs-harbor.url = "git+ssh://git@codeberg.org/caniko/rs-harbor.git";

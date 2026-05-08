@@ -14,7 +14,8 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use runner::{
-    AndroidRunOptions, OutputFormat, WebRtcRunOptions, run_android_1v1, run_webrtc_1v1,
+    AndroidDoctorOptions, AndroidRunOptions, AndroidUiRunOptions, OutputFormat, WebRtcRunOptions,
+    run_android_1v1, run_android_doctor, run_android_ui, run_webrtc_1v1,
 };
 
 #[derive(Debug, Parser)]
@@ -33,6 +34,12 @@ enum Commands {
     /// Run a desktop-listener + Android-emulator joiner WebRTC 1v1 smoke test.
     #[command(name = "android-1v1")]
     Android1v1(Android1v1Args),
+    /// Launch the Android app, capture a screenshot, and validate landscape UI.
+    #[command(name = "android-ui")]
+    AndroidUi(AndroidUiArgs),
+    /// Validate Android SDK/adb/APK/manifest prerequisites.
+    #[command(name = "android-doctor")]
+    AndroidDoctor(AndroidDoctorArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -122,9 +129,79 @@ struct Android1v1Args {
     #[arg(long)]
     dry_run: bool,
 
+    /// Override adb serial for a physical device or specific emulator.
+    #[arg(long)]
+    adb_serial: Option<String>,
+
+    /// Use a physical device instead of booting the configured AVD.
+    #[arg(long)]
+    device: bool,
+
     /// Output format.
     #[arg(long, default_value = "text")]
     output_format: CliOutputFormat,
+}
+
+#[derive(Debug, Parser)]
+struct AndroidUiArgs {
+    /// Project config path.
+    #[arg(long, default_value = "fragpipe.toml")]
+    config: PathBuf,
+
+    /// Number of test runs.
+    #[arg(long)]
+    max_runs: Option<u32>,
+
+    /// Timeout per UI run in seconds.
+    #[arg(long)]
+    timeout: Option<u64>,
+
+    /// Stop after the first failed run.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    stop_on_failure: bool,
+
+    /// Skip the configured game and APK build commands.
+    #[arg(long)]
+    no_build: bool,
+
+    /// Skip `adb install -r`.
+    #[arg(long)]
+    no_install: bool,
+
+    /// Override adb serial for a physical device or specific emulator.
+    #[arg(long)]
+    adb_serial: Option<String>,
+
+    /// Use a physical device instead of booting the configured AVD.
+    #[arg(long)]
+    device: bool,
+
+    /// JSON launch config pushed to the Android device before starting.
+    #[arg(long)]
+    launch_config: Option<String>,
+
+    /// Print commands without launching adb / emulator.
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Output format.
+    #[arg(long, default_value = "text")]
+    output_format: CliOutputFormat,
+}
+
+#[derive(Debug, Parser)]
+struct AndroidDoctorArgs {
+    /// Project config path.
+    #[arg(long, default_value = "fragpipe.toml")]
+    config: PathBuf,
+
+    /// Override adb serial for a physical device or specific emulator.
+    #[arg(long)]
+    adb_serial: Option<String>,
+
+    /// Use a physical device instead of requiring the configured AVD.
+    #[arg(long)]
+    device: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -168,7 +245,28 @@ fn main() -> Result<()> {
             local_ip: args.local_ip,
             webrtc_port: args.webrtc_port,
             dry_run: args.dry_run,
+            adb_serial: args.adb_serial,
+            device: args.device,
+            launch_config: None,
             output_format: args.output_format.into(),
+        }),
+        Commands::AndroidUi(args) => run_android_ui(AndroidUiRunOptions {
+            config_path: args.config,
+            max_runs: args.max_runs,
+            timeout_secs: args.timeout,
+            stop_on_failure: args.stop_on_failure,
+            no_build: args.no_build,
+            no_install: args.no_install,
+            dry_run: args.dry_run,
+            adb_serial: args.adb_serial,
+            device: args.device,
+            launch_config: args.launch_config,
+            output_format: args.output_format.into(),
+        }),
+        Commands::AndroidDoctor(args) => run_android_doctor(AndroidDoctorOptions {
+            config_path: args.config,
+            adb_serial: args.adb_serial,
+            device: args.device,
         }),
     }
 }

@@ -111,10 +111,37 @@ impl Default for WebRtcConfig {
 /// the desktop peer emits.
 #[derive(Debug, Deserialize, Clone)]
 pub struct AndroidConfig {
+    /// Android target type. `emulator` boots/kills the configured AVD; `device`
+    /// uses an already-attached physical device selected by `adb_serial`.
+    #[serde(default)]
+    pub target: AndroidTarget,
     /// AVD name (must already exist; fragpipe does not create AVDs).
+    #[serde(default = "default_android_avd_name")]
     pub avd_name: String,
-    /// Path to the test-peer APK to install on the emulator.
+    /// Optional adb serial. Required when multiple devices are attached and for
+    /// deterministic physical-device fix loops.
+    #[serde(default)]
+    pub adb_serial: Option<String>,
+    /// Path to the APK to install on the Android target.
     pub apk_path: PathBuf,
+    /// Optional command to build/stage the configured APK before install.
+    #[serde(default)]
+    pub apk_build_command: Option<String>,
+    /// Optional full-app APK path used by `android-ui`.
+    #[serde(default)]
+    pub ui_apk_path: Option<PathBuf>,
+    /// Optional full-app package name used by `android-ui`.
+    #[serde(default)]
+    pub ui_package_name: Option<String>,
+    /// Optional full-app activity name used by `android-ui`.
+    #[serde(default)]
+    pub ui_activity_name: Option<String>,
+    /// Optional full-app logcat tag used by `android-ui`.
+    #[serde(default)]
+    pub ui_log_tag: Option<String>,
+    /// Optional command to build/stage the full-app APK before `android-ui`.
+    #[serde(default)]
+    pub ui_apk_build_command: Option<String>,
     /// Application package name (e.g. `tartanoglu.chessbender.test_peer`).
     pub package_name: String,
     /// Fully-qualified activity name (e.g. `androidx.games.activity.GameActivity`).
@@ -142,6 +169,20 @@ pub struct AndroidConfig {
     /// Seconds to wait for the emulator to reach `sys.boot_completed=1`.
     #[serde(default = "default_android_boot_timeout_secs")]
     pub boot_timeout_secs: u64,
+    /// Device-side launch config path used by UI-full automation.
+    #[serde(default = "default_android_launch_config_path")]
+    pub launch_config_path: String,
+    /// Host directory for Android UI screenshots and per-run artifacts.
+    #[serde(default = "default_android_screenshot_dir")]
+    pub screenshot_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AndroidTarget {
+    #[default]
+    Emulator,
+    Device,
 }
 
 #[derive(Debug, Deserialize)]
@@ -253,6 +294,10 @@ fn default_android_activity() -> String {
     "androidx.games.activity.GameActivity".into()
 }
 
+fn default_android_avd_name() -> String {
+    "Pixel_6_API_34".into()
+}
+
 fn default_android_log_tag() -> String {
     "chessbender".into()
 }
@@ -277,6 +322,14 @@ fn default_android_emulator_args() -> Vec<String> {
 
 fn default_android_boot_timeout_secs() -> u64 {
     180
+}
+
+fn default_android_launch_config_path() -> String {
+    "/data/local/tmp/chessbender-launch.json".into()
+}
+
+fn default_android_screenshot_dir() -> PathBuf {
+    PathBuf::from("logs/fragpipe-android-screenshots")
 }
 
 fn default_pass_markers() -> Vec<String> {

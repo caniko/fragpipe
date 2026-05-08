@@ -53,3 +53,23 @@ joiner_args = [
 # log_file = "game.log"
 # binary_name = "chessbender"
 # assets_dir = "/home/can/chessbender-fragpipe/assets"
+
+# Optional Android validation:
+# [android]
+# target = "emulator" # or "device"
+# avd_name = "Pixel_6_API_34"
+# adb_serial = "emulator-5554"
+# apk_path = "android/test-peer/build/outputs/apk/debug/test-peer-debug.apk"
+# apk_build_command = "nix run .#android-stage-test-peer-emulator"
+# package_name = "tartanoglu.chessbender.testpeer"
+# activity_name = "androidx.games.activity.GameActivity"
+# log_tag = "chessbender"
+# rendezvous_path = "/data/local/tmp/chessbender-rendezvous.txt"
+# launch_config_path = "/data/local/tmp/chessbender-launch.json"
+# logcat_log = "fragpipe-android.log"
+# screenshot_dir = "logs/fragpipe-android-screenshots"
+# ui_apk_path = "android/app/build/outputs/apk/debug/app-debug.apk"
+# ui_apk_build_command = "nix run .#android-stage-app-emulator"
+# ui_package_name = "tartanoglu.chessbender"
+# ui_activity_name = "androidx.games.activity.GameActivity"
+# ui_log_tag = "chessbender"
