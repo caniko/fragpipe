@@ -43,11 +43,8 @@ pub fn rewrite_join_addr(addr: &str, local_ip: IpAddr) -> Result<String> {
     while index + 1 < rewritten.len() {
         let protocol = rewritten[index].as_str();
         if protocol == "ip4" || protocol == "ip6" {
-            let value = rewritten[index + 1].as_str();
-            if is_non_routable_listen_ip(value) {
-                rewritten[index] = replacement_protocol.to_string();
-                rewritten[index + 1] = replacement_ip;
-            }
+            rewritten[index] = replacement_protocol.to_string();
+            rewritten[index + 1] = replacement_ip;
             break;
         }
         index += 2;
@@ -98,10 +95,6 @@ fn render_placeholders(args: &mut [String], port: Option<u16>, join_addr: Option
             *arg = arg.replace("{join_addr}", join_addr);
         }
     }
-}
-
-fn is_non_routable_listen_ip(value: &str) -> bool {
-    matches!(value, "0.0.0.0" | "127.0.0.1" | "::" | "::1" | "localhost")
 }
 
 fn multiaddr_uses_ip(addr: &str, ip: IpAddr) -> bool {
@@ -158,6 +151,16 @@ WEBRTC_JOIN_ADDR=/ip4/10.88.0.1/udp/27200/webrtc-direct/certhash/uEiHash
         assert_eq!(
             rewritten,
             "/ip4/10.0.0.5/udp/27200/webrtc-direct/certhash/uEiHash"
+        );
+    }
+
+    #[test]
+    fn rewrites_routable_addr_to_configured_local_ip() {
+        let addr = "/ip4/10.55.0.2/udp/27200/webrtc-direct/certhash/uEiHash";
+        let rewritten = rewrite_join_addr(addr, "10.0.2.2".parse().unwrap()).unwrap();
+        assert_eq!(
+            rewritten,
+            "/ip4/10.0.2.2/udp/27200/webrtc-direct/certhash/uEiHash"
         );
     }
 
