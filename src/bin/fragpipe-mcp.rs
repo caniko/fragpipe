@@ -377,6 +377,54 @@ struct CrossPlatformInput {
     /// If true, passes `--no-install` to Android cells.
     #[serde(default)]
     no_install: Option<bool>,
+    /// Cluster cells to run after the fragpipe cells (each shells out to
+    /// `cluster-ctl test`). Steampipe expects VMs to be running, so each cell
+    /// can optionally pre-run a flake app via `nix run .#<nix_up_target>` to
+    /// boot its VMs. Cluster cells inherit `common.workdir`.
+    #[serde(default)]
+    cluster_cells: Option<Vec<ClusterCell>>,
+    /// Override for the `cluster-ctl` binary used by cluster cells.
+    #[serde(default)]
+    cluster_ctl_bin: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
+struct ClusterCell {
+    /// Cluster name passed via `--cluster <name>`.
+    cluster: String,
+    /// Optional flake app to `nix run .#<target>` before the cluster_test invocation.
+    #[serde(default)]
+    nix_up_target: Option<String>,
+    /// Override the flake reference for `nix_up_target` (default ".").
+    #[serde(default)]
+    nix_flake: Option<String>,
+    /// VM count. Derived from cluster name when omitted (1v1 → 1, else → 7).
+    #[serde(default)]
+    vm_count: Option<u8>,
+    /// Network transport: "lan" (default) or "steam".
+    #[serde(default)]
+    network: Option<String>,
+    /// Players, 2-8.
+    #[serde(default)]
+    players: Option<u8>,
+    /// Per-run no-progress timeout in seconds.
+    #[serde(default)]
+    timeout: Option<u64>,
+    /// VM display mode (headless, weston, sway, weston-gpu, sway-gpu).
+    #[serde(default)]
+    display: Option<String>,
+    /// Host game-binary args.
+    #[serde(default)]
+    host_args: Option<String>,
+    /// VM game-binary args.
+    #[serde(default)]
+    vm_args: Option<String>,
+    /// Capture screenshots on failure.
+    #[serde(default)]
+    capture_on_failure: Option<bool>,
+    /// Display label for the matrix output (defaults to the cluster name).
+    #[serde(default)]
+    label: Option<String>,
 }
 
 struct CommandContext {
@@ -702,6 +750,7 @@ impl FragpipeMcp {
             }
         }
 
+        let mut early_exit = false;
         for (enabled, command, label, timeout_default) in [
             (
                 input.android_1v1.unwrap_or(true),
@@ -741,7 +790,82 @@ impl FragpipeMcp {
             if !ok {
                 failed += 1;
                 if stop_on_failure {
+                    early_exit = true;
                     break;
+                }
+            }
+        }
+
+        if !early_exit
+            && let Some(cells) = input.cluster_cells.as_ref()
+        {
+            for cell in cells {
+                let label = cell.label.clone().unwrap_or_else(|| cell.cluster.clone());
+                let cell_timeout = cell.timeout.unwrap_or(timeout);
+
+                if let Some(target) = &cell.nix_up_target {
+                    let flake = cell.nix_flake.as_deref().unwrap_or(".");
+                    let (up_text, up_ok) =
+                        self.run_nix_app(flake, target, &input.common.workdir, 900)?;
+                    output.push_str(&format!("=== MATRIX CELL: {label} (up) ===\n"));
+                    output.push_str(&up_text);
+                    if !up_ok {
+                        failed += 1;
+                        if stop_on_failure {
+                            break;
+                        }
+                        continue;
+                    }
+                }
+
+                let cluster_common = ClusterCommonInput {
+                    cluster_ctl_bin: input.cluster_ctl_bin.clone(),
+                    workdir: input.common.workdir.clone(),
+                    cluster: Some(cell.cluster.clone()),
+                    vm_count: cell.vm_count,
+                    mcp_timeout: None,
+                };
+
+                let mut args: Vec<String> = vec!["test".into()];
+                if let Some(net) = &cell.network {
+                    args.push("--network".into());
+                    args.push(net.clone());
+                }
+                if let Some(players) = cell.players {
+                    args.push("--players".into());
+                    args.push(players.to_string());
+                }
+                args.push("--max-runs".into());
+                args.push(max_runs.to_string());
+                args.push("--timeout".into());
+                args.push(cell_timeout.to_string());
+                if let Some(d) = &cell.display {
+                    args.push("--display".into());
+                    args.push(d.clone());
+                }
+                if cell.capture_on_failure.unwrap_or(false) {
+                    args.push("--capture-on-failure".into());
+                }
+                if let Some(a) = &cell.host_args {
+                    args.push("--host-args".into());
+                    args.push(a.clone());
+                }
+                if let Some(a) = &cell.vm_args {
+                    args.push("--vm-args".into());
+                    args.push(a.clone());
+                }
+
+                let wall = cell_timeout
+                    .saturating_mul(max_runs.max(1) as u64)
+                    .saturating_add(600);
+                let (text, ok) = self.run_cluster_ctl(&cluster_common, args, wall)?;
+                output.push_str(&format!("=== MATRIX CELL: {label} ===\n"));
+                output.push_str(&text);
+                if !ok {
+                    failed += 1;
+                    if stop_on_failure {
+                        break;
+                    }
                 }
             }
         }
@@ -932,24 +1056,52 @@ impl FragpipeMcp {
         Parameters(input): Parameters<NixRunInput>,
     ) -> Result<CallToolResult, ErrorData> {
         let flake = input.flake.as_deref().unwrap_or(".");
-        let flake_ref = format!("{flake}#{}", input.target);
+        let target = input.target.as_str();
         let timeout_secs = input.timeout.unwrap_or(300);
-        let workdir = input
-            .workdir
+        let workdir_override = input.workdir.clone();
+        let extra_args = input.args.as_deref().unwrap_or(&[]).to_vec();
+        let (text, _) = self.run_nix_app_inner(
+            flake,
+            target,
+            &workdir_override,
+            timeout_secs,
+            &extra_args,
+        )?;
+        Ok(CallToolResult::success(vec![Content::text(text)]))
+    }
+}
+
+impl FragpipeMcp {
+    fn run_nix_app(
+        &self,
+        flake: &str,
+        target: &str,
+        workdir_override: &Option<String>,
+        timeout_secs: u64,
+    ) -> Result<(String, bool), ErrorData> {
+        self.run_nix_app_inner(flake, target, workdir_override, timeout_secs, &[])
+    }
+
+    fn run_nix_app_inner(
+        &self,
+        flake: &str,
+        target: &str,
+        workdir_override: &Option<String>,
+        timeout_secs: u64,
+        extra_args: &[String],
+    ) -> Result<(String, bool), ErrorData> {
+        let flake_ref = format!("{flake}#{target}");
+        let workdir = workdir_override
             .clone()
             .map(PathBuf::from)
             .unwrap_or_else(|| self.default_workdir.clone());
 
         let mut cmd = Command::new("nix");
         cmd.arg("run").arg(&flake_ref);
-
-        if let Some(ref extra) = input.args
-            && !extra.is_empty()
-        {
+        if !extra_args.is_empty() {
             cmd.arg("--");
-            cmd.args(extra);
+            cmd.args(extra_args);
         }
-
         cmd.current_dir(&workdir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -981,12 +1133,13 @@ impl FragpipeMcp {
                 );
                 text.push_str(&String::from_utf8_lossy(&output.stdout));
                 text.push_str(&String::from_utf8_lossy(&output.stderr));
-                text.push_str(if status.success() {
+                let ok = status.success();
+                text.push_str(if ok {
                     "\n--- PASS ---\n"
                 } else {
                     "\n--- FAIL ---\n"
                 });
-                return Ok(CallToolResult::success(vec![Content::text(text)]));
+                return Ok((text, ok));
             }
             if started.elapsed() >= Duration::from_secs(timeout_secs) {
                 terminate_process(&mut child);
@@ -1003,7 +1156,7 @@ impl FragpipeMcp {
                 text.push_str(&String::from_utf8_lossy(&output.stdout));
                 text.push_str(&String::from_utf8_lossy(&output.stderr));
                 text.push_str(&format!("\n--- TIMEOUT ({timeout_secs}s limit) ---\n"));
-                return Ok(CallToolResult::success(vec![Content::text(text)]));
+                return Ok((text, false));
             }
             std::thread::sleep(Duration::from_millis(100));
         }

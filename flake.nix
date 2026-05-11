@@ -17,8 +17,57 @@
     flake-utils,
     rust-overlay,
     ...
-  }:
-    flake-utils.lib.eachDefaultSystem (system: let
+  }: let
+    # Wrap `fragpipe-mcp` with the Android SDK/NDK environment variables it
+    # needs in order to drive `android-1v1`, `android-ui`, and `android-doctor`.
+    # Consumers pass in an `androidComposition` (from `androidenv.composeAndroidPackages`)
+    # plus the NDK version and platform they target. The defaults match the
+    # values fragpipe assumes when invoked from `nix develop .#android`.
+    mkFragpipeMcpAndroidWrapper = {
+      pkgs,
+      fragpipeMcp,
+      androidComposition,
+      ndkVersion,
+      cargoNdkPlatform ? 28,
+      name ? "fragpipe-mcp-android",
+      extraRuntimeInputs ? [],
+      extraEnv ? {},
+    }: let
+      ndkRoot = "${androidComposition.androidsdk}/libexec/android-sdk/ndk/${ndkVersion}";
+      sdkRoot = "${androidComposition.androidsdk}/libexec/android-sdk";
+      extraExports =
+        builtins.concatStringsSep "\n"
+        (builtins.map (k: ''export ${k}="${builtins.getAttr k extraEnv}"'')
+          (builtins.attrNames extraEnv));
+    in
+      pkgs.writeShellApplication {
+        inherit name;
+        runtimeInputs =
+          [
+            androidComposition.androidsdk
+            pkgs.cargo-ndk
+            pkgs.gradle
+            pkgs.jdk21
+          ]
+          ++ extraRuntimeInputs;
+        text = ''
+          export ANDROID_NDK_HOME="${ndkRoot}"
+          export ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"
+          export ANDROID_SDK_ROOT="${sdkRoot}"
+          export ANDROID_HOME="$ANDROID_SDK_ROOT"
+          export ANDROID_AVD_HOME="''${ANDROID_AVD_HOME:-$HOME/.config/.android/avd}"
+          export CARGO_NDK_PLATFORM=${toString cargoNdkPlatform}
+          ${extraExports}
+          exec ${fragpipeMcp}/bin/fragpipe-mcp "$@"
+        '';
+      };
+  in
+    {
+      lib = {
+        inherit mkFragpipeMcpAndroidWrapper;
+      };
+    }
+    // flake-utils.lib.eachDefaultSystem (system: let
       pkgs = import nixpkgs {
         inherit system;
         overlays = [(import rust-overlay)];
