@@ -7,6 +7,13 @@ description = "Bare-metal multiplayer test orchestration for games"
 
 [workspace]
 
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "fragpipe"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
