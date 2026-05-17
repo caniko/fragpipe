@@ -146,7 +146,9 @@ impl FragpipeMcp {
 
     fn cluster_context(&self, common: &ClusterCommonInput) -> ClusterContext {
         let cluster = common.cluster.clone().unwrap_or_else(|| "1v1".to_string());
-        let vm_count = common.vm_count.unwrap_or_else(|| default_vm_count(&cluster));
+        let vm_count = common
+            .vm_count
+            .unwrap_or_else(|| default_vm_count(&cluster));
         ClusterContext {
             cluster_ctl_bin: common
                 .cluster_ctl_bin
@@ -596,6 +598,127 @@ fn default_vm_count(cluster: &str) -> u8 {
     if cluster == "1v1" { 1 } else { 7 }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ClusterTestArgOptions<'a> {
+    network: Option<&'a str>,
+    players: Option<u8>,
+    max_runs: u32,
+    timeout: u64,
+    hard_timeout: Option<u64>,
+    shutdown_timeout: Option<u64>,
+    stop_on_failure: Option<bool>,
+    deploy: Option<bool>,
+    build: Option<bool>,
+    display: Option<&'a str>,
+    capture_on_failure: bool,
+    filter_pattern: Option<&'a str>,
+    output_file: Option<&'a str>,
+    host_args: Option<&'a str>,
+    vm_args: Option<&'a str>,
+    strace: bool,
+}
+
+fn push_optional_value_arg(args: &mut Vec<String>, flag: &str, value: Option<&str>) {
+    if let Some(value) = value {
+        args.push(flag.into());
+        args.push(value.into());
+    }
+}
+
+fn push_optional_equals_arg(args: &mut Vec<String>, flag: &str, value: Option<&str>) {
+    if let Some(value) = value {
+        args.push(format!("{flag}={value}"));
+    }
+}
+
+fn build_cluster_test_args(options: ClusterTestArgOptions<'_>) -> Vec<String> {
+    let mut args: Vec<String> = vec!["test".into()];
+    push_optional_value_arg(&mut args, "--network", options.network);
+    if let Some(players) = options.players {
+        args.push("--players".into());
+        args.push(players.to_string());
+    }
+    args.push("--max-runs".into());
+    args.push(options.max_runs.to_string());
+    args.push("--timeout".into());
+    args.push(options.timeout.to_string());
+    if let Some(t) = options.hard_timeout {
+        args.push("--hard-timeout".into());
+        args.push(t.to_string());
+    }
+    if let Some(t) = options.shutdown_timeout {
+        args.push("--shutdown-timeout".into());
+        args.push(t.to_string());
+    }
+    if options.stop_on_failure == Some(false) {
+        args.push("--no-stop-on-failure".into());
+    }
+    if options.deploy == Some(false) {
+        args.push("--no-deploy".into());
+    }
+    if options.build == Some(false) {
+        args.push("--no-build".into());
+    }
+    push_optional_value_arg(&mut args, "--display", options.display);
+    if options.capture_on_failure {
+        args.push("--capture-on-failure".into());
+    }
+    push_optional_value_arg(&mut args, "--filter-pattern", options.filter_pattern);
+    push_optional_value_arg(&mut args, "--output-file", options.output_file);
+    push_optional_equals_arg(&mut args, "--host-args", options.host_args);
+    push_optional_equals_arg(&mut args, "--vm-args", options.vm_args);
+    if options.strace {
+        args.push("--strace".into());
+    }
+    args
+}
+
+fn build_cluster_cell_test_args(cell: &ClusterCell, max_runs: u32, timeout: u64) -> Vec<String> {
+    build_cluster_test_args(ClusterTestArgOptions {
+        network: cell.network.as_deref(),
+        players: cell.players,
+        max_runs,
+        timeout,
+        hard_timeout: None,
+        shutdown_timeout: None,
+        stop_on_failure: None,
+        deploy: None,
+        build: None,
+        display: cell.display.as_deref(),
+        capture_on_failure: cell.capture_on_failure.unwrap_or(false),
+        filter_pattern: None,
+        output_file: None,
+        host_args: cell.host_args.as_deref(),
+        vm_args: cell.vm_args.as_deref(),
+        strace: false,
+    })
+}
+
+fn build_cluster_test_input_args(
+    input: &ClusterTestInput,
+    max_runs: u32,
+    timeout: u64,
+) -> Vec<String> {
+    build_cluster_test_args(ClusterTestArgOptions {
+        network: input.network.as_deref(),
+        players: input.players,
+        max_runs,
+        timeout,
+        hard_timeout: input.hard_timeout,
+        shutdown_timeout: input.shutdown_timeout,
+        stop_on_failure: input.stop_on_failure,
+        deploy: input.deploy,
+        build: input.build,
+        display: input.display.as_deref(),
+        capture_on_failure: input.capture_on_failure.unwrap_or(false),
+        filter_pattern: input.filter_pattern.as_deref(),
+        output_file: input.output_file.as_deref(),
+        host_args: input.host_args.as_deref(),
+        vm_args: input.vm_args.as_deref(),
+        strace: input.strace.unwrap_or(false),
+    })
+}
+
 fn cluster_command_header(ctx: &ClusterContext, args: &[String]) -> String {
     format!(
         "=== fragpipe-mcp (cluster proxy) ===\nworkdir: {}\ncommand: {} --cluster {} --vm-count {} {}\n\n",
@@ -796,9 +919,7 @@ impl FragpipeMcp {
             }
         }
 
-        if !early_exit
-            && let Some(cells) = input.cluster_cells.as_ref()
-        {
+        if !early_exit && let Some(cells) = input.cluster_cells.as_ref() {
             for cell in cells {
                 let label = cell.label.clone().unwrap_or_else(|| cell.cluster.clone());
                 let cell_timeout = cell.timeout.unwrap_or(timeout);
@@ -826,34 +947,7 @@ impl FragpipeMcp {
                     mcp_timeout: None,
                 };
 
-                let mut args: Vec<String> = vec!["test".into()];
-                if let Some(net) = &cell.network {
-                    args.push("--network".into());
-                    args.push(net.clone());
-                }
-                if let Some(players) = cell.players {
-                    args.push("--players".into());
-                    args.push(players.to_string());
-                }
-                args.push("--max-runs".into());
-                args.push(max_runs.to_string());
-                args.push("--timeout".into());
-                args.push(cell_timeout.to_string());
-                if let Some(d) = &cell.display {
-                    args.push("--display".into());
-                    args.push(d.clone());
-                }
-                if cell.capture_on_failure.unwrap_or(false) {
-                    args.push("--capture-on-failure".into());
-                }
-                if let Some(a) = &cell.host_args {
-                    args.push("--host-args".into());
-                    args.push(a.clone());
-                }
-                if let Some(a) = &cell.vm_args {
-                    args.push("--vm-args".into());
-                    args.push(a.clone());
-                }
+                let args = build_cluster_cell_test_args(cell, max_runs, cell_timeout);
 
                 let wall = cell_timeout
                     .saturating_mul(max_runs.max(1) as u64)
@@ -970,62 +1064,7 @@ impl FragpipeMcp {
                 .saturating_add(600)
         });
 
-        let mut args: Vec<String> = vec!["test".into()];
-        if let Some(net) = &input.network {
-            args.push("--network".into());
-            args.push(net.clone());
-        }
-        if let Some(players) = input.players {
-            args.push("--players".into());
-            args.push(players.to_string());
-        }
-        args.push("--max-runs".into());
-        args.push(max_runs.to_string());
-        args.push("--timeout".into());
-        args.push(per_run_timeout.to_string());
-        if let Some(t) = input.hard_timeout {
-            args.push("--hard-timeout".into());
-            args.push(t.to_string());
-        }
-        if let Some(t) = input.shutdown_timeout {
-            args.push("--shutdown-timeout".into());
-            args.push(t.to_string());
-        }
-        if input.stop_on_failure == Some(false) {
-            args.push("--no-stop-on-failure".into());
-        }
-        if input.deploy == Some(false) {
-            args.push("--no-deploy".into());
-        }
-        if input.build == Some(false) {
-            args.push("--no-build".into());
-        }
-        if let Some(d) = &input.display {
-            args.push("--display".into());
-            args.push(d.clone());
-        }
-        if input.capture_on_failure.unwrap_or(false) {
-            args.push("--capture-on-failure".into());
-        }
-        if let Some(p) = &input.filter_pattern {
-            args.push("--filter-pattern".into());
-            args.push(p.clone());
-        }
-        if let Some(f) = &input.output_file {
-            args.push("--output-file".into());
-            args.push(f.clone());
-        }
-        if let Some(a) = &input.host_args {
-            args.push("--host-args".into());
-            args.push(a.clone());
-        }
-        if let Some(a) = &input.vm_args {
-            args.push("--vm-args".into());
-            args.push(a.clone());
-        }
-        if input.strace.unwrap_or(false) {
-            args.push("--strace".into());
-        }
+        let args = build_cluster_test_input_args(&input, max_runs, per_run_timeout);
 
         let (output, _) = self.run_cluster_ctl(&input.common, args, wall_timeout)?;
         Ok(CallToolResult::success(vec![Content::text(output)]))
@@ -1060,13 +1099,8 @@ impl FragpipeMcp {
         let timeout_secs = input.timeout.unwrap_or(300);
         let workdir_override = input.workdir.clone();
         let extra_args = input.args.as_deref().unwrap_or(&[]).to_vec();
-        let (text, _) = self.run_nix_app_inner(
-            flake,
-            target,
-            &workdir_override,
-            timeout_secs,
-            &extra_args,
-        )?;
+        let (text, _) =
+            self.run_nix_app_inner(flake, target, &workdir_override, timeout_secs, &extra_args)?;
         Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 }
@@ -1174,7 +1208,8 @@ impl ServerHandler for FragpipeMcp {
             "Run fragpipe smoke and fix-loop commands plus cluster proxy operations. \
              Native tools (webrtc-1v1, android-*) shell out to the configured `fragpipe` \
              binary; cluster_* tools shell out to `cluster-ctl` (steampipe). Pass \
-             workdir/config/cluster explicitly for project-specific runs.".into(),
+             workdir/config/cluster explicitly for project-specific runs."
+                .into(),
         );
         info
     }
@@ -1197,4 +1232,70 @@ async fn main() -> anyhow::Result<()> {
     let service = FragpipeMcp::new().serve(stdio()).await?;
     service.waiting().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn has_split_flag_value(args: &[String], flag: &str, value: &str) -> bool {
+        args.windows(2)
+            .any(|window| window[0] == flag && window[1] == value)
+    }
+
+    #[test]
+    fn cluster_test_args_forward_host_and_vm_args_with_equals_form() {
+        let host_args = "--auto-host-udp 0.0.0.0:7777";
+        let vm_args = "--auto-join-udp 10.0.0.1:7777";
+        let args = build_cluster_test_args(ClusterTestArgOptions {
+            network: Some("lan"),
+            players: Some(2),
+            max_runs: 3,
+            timeout: 120,
+            hard_timeout: None,
+            shutdown_timeout: None,
+            stop_on_failure: None,
+            deploy: None,
+            build: None,
+            display: Some("headless"),
+            capture_on_failure: true,
+            filter_pattern: None,
+            output_file: None,
+            host_args: Some(host_args),
+            vm_args: Some(vm_args),
+            strace: false,
+        });
+
+        assert!(args.contains(&format!("--host-args={host_args}")));
+        assert!(args.contains(&format!("--vm-args={vm_args}")));
+        assert!(!args.contains(&"--host-args".to_string()));
+        assert!(!args.contains(&"--vm-args".to_string()));
+        assert!(!has_split_flag_value(&args, "--host-args", host_args));
+        assert!(!has_split_flag_value(&args, "--vm-args", vm_args));
+    }
+
+    #[test]
+    fn cluster_test_args_preserve_empty_host_and_vm_args() {
+        let args = build_cluster_test_args(ClusterTestArgOptions {
+            network: None,
+            players: None,
+            max_runs: 1,
+            timeout: 300,
+            hard_timeout: None,
+            shutdown_timeout: None,
+            stop_on_failure: None,
+            deploy: None,
+            build: None,
+            display: None,
+            capture_on_failure: false,
+            filter_pattern: None,
+            output_file: None,
+            host_args: Some(""),
+            vm_args: Some(""),
+            strace: false,
+        });
+
+        assert!(args.contains(&"--host-args=".to_string()));
+        assert!(args.contains(&"--vm-args=".to_string()));
+    }
 }
