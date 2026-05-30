@@ -51,6 +51,25 @@
         "type": "github"
       }
     },
+    "microvm": {
+      "inputs": {
+        "nixpkgs": "nixpkgs_2",
+        "spectrum": "spectrum"
+      },
+      "locked": {
+        "lastModified": 1779641751,
+        "narHash": "sha256-xSEiY1kZoCHX7bzeDe6fzwnaG9Mjd/WrJ4MEWJghI/Q=",
+        "owner": "astro",
+        "repo": "microvm.nix",
+        "rev": "4fe5ab55ef830e4b2d82d37ef7a5aca6e7b0e5f8",
+        "type": "github"
+      },
+      "original": {
+        "owner": "astro",
+        "repo": "microvm.nix",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1777395829,
@@ -63,6 +82,22 @@
       "original": {
         "owner": "NixOS",
         "ref": "nixpkgs-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "nixpkgs_2": {
+      "locked": {
+        "lastModified": 1778869304,
+        "narHash": "sha256-30sZNZoA1cqF5JNO9fVX+wgiQYjB7HJqqJ4ztCDeBZE=",
+        "owner": "nixos",
+        "repo": "nixpkgs",
+        "rev": "d233902339c02a9c334e7e593de68855ad26c4cb",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nixos",
+        "ref": "nixos-unstable",
         "repo": "nixpkgs",
         "type": "github"
       }
@@ -108,7 +143,8 @@
         "rust-overlay": [
           "rs-harbor",
           "rust-overlay"
-        ]
+        ],
+        "steampipe": "steampipe"
       }
     },
     "rs-harbor": {
@@ -152,6 +188,73 @@
         "owner": "oxalica",
         "repo": "rust-overlay",
         "type": "github"
+      }
+    },
+    "spectrum": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1778940603,
+        "narHash": "sha256-voSM8dZNlaOWN3kbYFky+FNY6fFQOEw0xF+ZMpZKkCQ=",
+        "ref": "refs/heads/main",
+        "rev": "367dd227f539267eae2b62770b4c17b88ac8c1f1",
+        "revCount": 1265,
+        "type": "git",
+        "url": "https://spectrum-os.org/git/spectrum"
+      },
+      "original": {
+        "type": "git",
+        "url": "https://spectrum-os.org/git/spectrum"
+      }
+    },
+    "steam-vent-fork": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1780128271,
+        "narHash": "sha256-tMpWsVrinkvSV1DYsPYIKvDcDQi+Px8RrPRl7MUJ+aM=",
+        "ref": "integration",
+        "rev": "eeb45aed9dd46b1e265b67fcc2416dcdb8431467",
+        "revCount": 265,
+        "type": "git",
+        "url": "https://codeberg.org/caniko/steam-vent.git"
+      },
+      "original": {
+        "ref": "integration",
+        "type": "git",
+        "url": "https://codeberg.org/caniko/steam-vent.git"
+      }
+    },
+    "steampipe": {
+      "inputs": {
+        "crane": [
+          "crane"
+        ],
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "microvm": "microvm",
+        "nixpkgs": [
+          "nixpkgs"
+        ],
+        "rs-harbor": [
+          "rs-harbor"
+        ],
+        "rust-overlay": [
+          "rust-overlay"
+        ],
+        "steam-vent-fork": "steam-vent-fork"
+      },
+      "locked": {
+        "lastModified": 1780130129,
+        "narHash": "sha256-hcFTO6pENK5LfPtradKvRHPxDsEqz0XNTcmCIkc1hoY=",
+        "ref": "refs/heads/trunk",
+        "rev": "4c02ff2589b06738e4aed3fc0c746e0be30a4b63",
+        "revCount": 169,
+        "type": "git",
+        "url": "https://codeberg.org/caniko/steampipe.git"
+      },
+      "original": {
+        "type": "git",
+        "url": "https://codeberg.org/caniko/steampipe.git"
       }
     },
     "systems": {

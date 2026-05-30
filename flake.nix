@@ -8,6 +8,19 @@
     rust-overlay.follows = "rs-harbor/rust-overlay";
     crane.follows = "rs-harbor/crane";
     flake-utils.follows = "rs-harbor/flake-utils";
+
+    # The steampipe cluster harness (cluster-ctl + lib.mkTestCluster). fragpipe
+    # re-exports it (see `lib.steampipe` and `packages.cluster-ctl` below) so
+    # downstream consumers reach steampipe THROUGH fragpipe rather than
+    # depending on it directly.
+    steampipe = {
+      url = "git+https://codeberg.org/caniko/steampipe.git";
+      inputs.rs-harbor.follows = "rs-harbor";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.rust-overlay.follows = "rust-overlay";
+      inputs.crane.follows = "crane";
+      inputs.flake-utils.follows = "flake-utils";
+    };
   };
 
   outputs = {
@@ -16,6 +29,7 @@
     rs-harbor,
     flake-utils,
     rust-overlay,
+    steampipe,
     ...
   }: let
     # Wrap `fragpipe-mcp` with the Android SDK/NDK environment variables it
@@ -65,6 +79,9 @@
     {
       lib = {
         inherit mkFragpipeMcpAndroidWrapper;
+        # Re-export the steampipe flake so consumers reach the cluster harness
+        # (lib.mkTestCluster, nixosModules, packages) through fragpipe.
+        inherit steampipe;
       };
     }
     // flake-utils.lib.eachDefaultSystem (system: let
@@ -108,6 +125,8 @@
         default = fragpipePackage;
         fragpipe = fragpipePackage;
         fragpipe-mcp = fragpipeMcpPackage;
+        # Re-exported from steampipe so consumers pull cluster-ctl via fragpipe.
+        cluster-ctl = steampipe.packages.${system}.default;
       };
 
       apps = {
