@@ -206,23 +206,6 @@
         "url": "https://spectrum-os.org/git/spectrum"
       }
     },
-    "steam-vent-fork": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1780128271,
-        "narHash": "sha256-tMpWsVrinkvSV1DYsPYIKvDcDQi+Px8RrPRl7MUJ+aM=",
-        "ref": "integration",
-        "rev": "eeb45aed9dd46b1e265b67fcc2416dcdb8431467",
-        "revCount": 265,
-        "type": "git",
-        "url": "https://codeberg.org/caniko/steam-vent.git"
-      },
-      "original": {
-        "ref": "integration",
-        "type": "git",
-        "url": "https://codeberg.org/caniko/steam-vent.git"
-      }
-    },
     "steampipe": {
       "inputs": {
         "crane": [
@@ -240,15 +223,14 @@
         ],
         "rust-overlay": [
           "rust-overlay"
-        ],
-        "steam-vent-fork": "steam-vent-fork"
+        ]
       },
       "locked": {
-        "lastModified": 1780130129,
-        "narHash": "sha256-hcFTO6pENK5LfPtradKvRHPxDsEqz0XNTcmCIkc1hoY=",
+        "lastModified": 1780147006,
+        "narHash": "sha256-Y1CQZ+m0Ecm3KF2buB4IsrnM8/JYT1fVnqzP5Mi4a/s=",
         "ref": "refs/heads/trunk",
-        "rev": "4c02ff2589b06738e4aed3fc0c746e0be30a4b63",
-        "revCount": 169,
+        "rev": "09e9bf70bd21c8a88b71374137030b1f94a6d561",
+        "revCount": 170,
         "type": "git",
         "url": "https://codeberg.org/caniko/steampipe.git"
       },
