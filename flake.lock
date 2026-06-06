@@ -226,11 +226,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1780147006,
-        "narHash": "sha256-Y1CQZ+m0Ecm3KF2buB4IsrnM8/JYT1fVnqzP5Mi4a/s=",
+        "lastModified": 1780766650,
+        "narHash": "sha256-gJqxaSAlN7Ycc5guV5qcVu1UesqU2AQXvwCbpjm/SEw=",
         "ref": "refs/heads/trunk",
-        "rev": "09e9bf70bd21c8a88b71374137030b1f94a6d561",
-        "revCount": 170,
+        "rev": "da4032b28b65359d098aeae9bf870160597e81a0",
+        "revCount": 175,
         "type": "git",
         "url": "https://codeberg.org/caniko/steampipe.git"
       },
