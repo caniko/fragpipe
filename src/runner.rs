@@ -1,7 +1,8 @@
 use std::fs;
+use std::fs::File;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::process::Child;
+use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -32,6 +33,21 @@ pub struct WebRtcRunOptions {
     pub output_format: OutputFormat,
 }
 
+pub struct InternetRunOptions {
+    pub config_path: PathBuf,
+    pub max_runs: Option<u32>,
+    pub timeout_secs: Option<u64>,
+    pub stop_on_failure: bool,
+    pub workdir: Option<PathBuf>,
+    pub game_bin: Option<PathBuf>,
+    pub rdv_bin: Option<PathBuf>,
+    pub asset_root: Option<PathBuf>,
+    pub log_dir: Option<PathBuf>,
+    pub pass_marker: Option<String>,
+    pub dry_run: bool,
+    pub output_format: OutputFormat,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
     Text,
@@ -51,6 +67,234 @@ struct RunReport {
     status: RunStatus,
     label: String,
     duration_secs: u64,
+}
+
+pub fn run_internet_1v1(options: InternetRunOptions) -> Result<()> {
+    let config = load_config(&options.config_path)?;
+    println!("Fragpipe project: {}", config.game.name);
+
+    let config_dir = options
+        .config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+    let workdir = match options.workdir {
+        Some(path) => path,
+        None => config
+            .game
+            .project_root
+            .as_ref()
+            .map(|path| resolve_path(config_dir, path))
+            .context("--workdir is required unless [game].project_root is set")?,
+    };
+    let script = workdir.join("dev/netns/internet-1v1-forced-relay.sh");
+    if !script.exists() {
+        bail!(
+            "internet smoke script is missing: {} (expected under --workdir)",
+            script.display()
+        );
+    }
+
+    let game_bin = options
+        .game_bin
+        .or_else(|| config.internet.game_bin.clone())
+        .unwrap_or_else(|| config.game.binary.clone());
+    let rdv_bin = options
+        .rdv_bin
+        .or_else(|| config.internet.rdv_bin.clone())
+        .context("--rdv-bin is required unless [internet].rdv_bin is set")?;
+    let asset_root = options
+        .asset_root
+        .or_else(|| config.internet.asset_root.clone())
+        .unwrap_or_else(|| PathBuf::from("assets"));
+    let base_log_dir = options
+        .log_dir
+        .or_else(|| config.internet.log_dir.clone())
+        .unwrap_or_else(|| PathBuf::from("logs/fragpipe/internet-1v1"));
+    let max_runs = options.max_runs.unwrap_or(config.internet.max_runs);
+    let timeout_secs = options.timeout_secs.unwrap_or(config.internet.timeout_secs);
+    let timeout = Duration::from_secs(timeout_secs);
+    let pass_marker = options
+        .pass_marker
+        .unwrap_or_else(|| config.internet.pass_marker.clone());
+
+    let game_bin = resolve_path(&workdir, &game_bin);
+    let rdv_bin = resolve_path(&workdir, &rdv_bin);
+    let asset_root = resolve_path(&workdir, &asset_root);
+    let base_log_dir = resolve_path(&workdir, &base_log_dir);
+
+    let mut passed = 0;
+    let mut failed = 0;
+    for run in 1..=max_runs {
+        println!("=== RUN {run}/{max_runs} ===");
+        let run_log_dir = base_log_dir
+            .join(timestamp_secs().to_string())
+            .join(format!("run-{run}"));
+        let report = run_one_internet(InternetOneRunOptions {
+            run,
+            script: &script,
+            workdir: &workdir,
+            game_bin: &game_bin,
+            rdv_bin: &rdv_bin,
+            asset_root: &asset_root,
+            log_dir: &run_log_dir,
+            timeout,
+            timeout_secs,
+            pass_marker: &pass_marker,
+            dry_run: options.dry_run,
+        });
+        emit_report(options.output_format, &report)?;
+        match report.status {
+            RunStatus::Pass => passed += 1,
+            RunStatus::Fail | RunStatus::Timeout => {
+                failed += 1;
+                if options.stop_on_failure {
+                    break;
+                }
+            }
+        }
+    }
+
+    println!("=== SUMMARY ===");
+    println!("{passed}/{max_runs} passed, {failed} failed");
+    if failed == 0 {
+        Ok(())
+    } else {
+        bail!("{failed} internet 1v1 run(s) failed")
+    }
+}
+
+struct InternetOneRunOptions<'a> {
+    run: u32,
+    script: &'a Path,
+    workdir: &'a Path,
+    game_bin: &'a Path,
+    rdv_bin: &'a Path,
+    asset_root: &'a Path,
+    log_dir: &'a Path,
+    timeout: Duration,
+    timeout_secs: u64,
+    pass_marker: &'a str,
+    dry_run: bool,
+}
+
+fn run_one_internet(options: InternetOneRunOptions<'_>) -> RunReport {
+    let started = Instant::now();
+    let result = run_one_internet_inner(&options);
+    let duration_secs = started.elapsed().as_secs();
+    match result {
+        Ok(label) => RunReport {
+            run: options.run,
+            status: RunStatus::Pass,
+            label,
+            duration_secs,
+        },
+        Err(error) if error.to_string().contains("timed out") => RunReport {
+            run: options.run,
+            status: RunStatus::Timeout,
+            label: error.to_string(),
+            duration_secs,
+        },
+        Err(error) => RunReport {
+            run: options.run,
+            status: RunStatus::Fail,
+            label: error.to_string(),
+            duration_secs,
+        },
+    }
+}
+
+fn run_one_internet_inner(options: &InternetOneRunOptions<'_>) -> Result<String> {
+    fs::create_dir_all(options.log_dir)
+        .with_context(|| format!("failed to create log dir {}", options.log_dir.display()))?;
+    let wrapper_log = options.log_dir.join("fragpipe-internet-1v1.log");
+    let command = format!(
+        "GAME_BIN={} RDV_BIN={} ASSET_ROOT={} LOG_DIR={} TIMEOUT_SECS={} PASS_MARKER={} {}",
+        options.game_bin.display(),
+        options.rdv_bin.display(),
+        options.asset_root.display(),
+        options.log_dir.display(),
+        options.timeout_secs,
+        options.pass_marker,
+        options.script.display(),
+    );
+    println!("==> Forced-relay internet 1v1: {command}");
+    println!("logs: {}", options.log_dir.display());
+    if options.dry_run {
+        return Ok("DRY_RUN".into());
+    }
+
+    let log = File::create(&wrapper_log)
+        .with_context(|| format!("failed to create log {}", wrapper_log.display()))?;
+    let log_err = log
+        .try_clone()
+        .context("failed to clone wrapper log file")?;
+    let mut child = Command::new(options.script)
+        .current_dir(options.workdir)
+        .env("GAME_BIN", options.game_bin)
+        .env("RDV_BIN", options.rdv_bin)
+        .env("ASSET_ROOT", options.asset_root)
+        .env("LOG_DIR", options.log_dir)
+        .env("TIMEOUT_SECS", options.timeout_secs.to_string())
+        .env("PASS_MARKER", options.pass_marker)
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(log_err))
+        .spawn()
+        .with_context(|| format!("failed to launch {}", options.script.display()))?;
+
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().context("failed to poll internet smoke")? {
+            break status;
+        }
+        if started.elapsed() > options.timeout + Duration::from_secs(30) {
+            kill_child(&mut child);
+            let output = read_lossy(&wrapper_log);
+            bail!(
+                "timed out after {}s waiting for internet smoke to exit{}",
+                options.timeout.as_secs() + 30,
+                internet_log_excerpt(&output)
+            );
+        }
+        thread::sleep(Duration::from_millis(250));
+    };
+
+    let output = read_lossy(&wrapper_log);
+    print!("{output}");
+    if status.success() && output.contains("PASS:") && output.contains(options.pass_marker) {
+        return Ok(first_marker_line(&output, "PASS:")
+            .unwrap_or(options.pass_marker)
+            .into());
+    }
+    if let Some(line) = first_marker_line(&output, "FAIL:") {
+        bail!("{line}");
+    }
+    if let Some(line) = first_marker_line(&output, "FATAL:") {
+        bail!("{line}");
+    }
+    if status.success() {
+        bail!(
+            "internet smoke exited successfully without PASS marker `{}`",
+            options.pass_marker
+        );
+    }
+    bail!("internet smoke failed with status {status}")
+}
+
+fn first_marker_line<'a>(output: &'a str, marker: &str) -> Option<&'a str> {
+    output.lines().find(|line| line.contains(marker))
+}
+
+fn internet_log_excerpt(output: &str) -> String {
+    let lines = output.lines().rev().take(8).collect::<Vec<_>>();
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut excerpt = String::from("; log tail:");
+    for line in lines.into_iter().rev() {
+        excerpt.push('\n');
+        excerpt.push_str(line);
+    }
+    excerpt
 }
 
 pub fn run_webrtc_1v1(options: WebRtcRunOptions) -> Result<()> {
@@ -964,5 +1208,8 @@ mod tests {
             PathBuf::from("fragpipe-listener.log")
         );
         assert_eq!(config.game.joiner_log, PathBuf::from("fragpipe-joiner.log"));
+        assert_eq!(config.internet.max_runs, 1);
+        assert_eq!(config.internet.timeout_secs, 200);
+        assert_eq!(config.internet.pass_marker, "GAME OVER");
     }
 }

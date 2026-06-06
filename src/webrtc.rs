@@ -118,7 +118,7 @@ fn multiaddr_uses_ip(addr: &str, ip: IpAddr) -> bool {
 mod tests {
     use std::path::PathBuf;
 
-    use crate::config::{Config, GameConfig, ProcessConfig, WebRtcConfig};
+    use crate::config::{Config, GameConfig, InternetConfig, ProcessConfig, WebRtcConfig};
 
     use super::*;
 
@@ -199,6 +199,7 @@ WEBRTC_JOIN_ADDR=/ip4/10.88.0.1/udp/27200/webrtc-direct/certhash/uEiHash
                 joiner_extra_args: vec!["--extra-joiner".into()],
             },
             process: ProcessConfig::default(),
+            internet: InternetConfig::default(),
             webrtc: WebRtcConfig {
                 listener_args: vec![
                     "--listen".into(),

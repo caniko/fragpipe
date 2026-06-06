@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use rmcp::{
@@ -58,7 +58,7 @@ impl FragpipeMcp {
             cmd.process_group(0);
         }
 
-        let mut child = cmd.spawn().map_err(|error| {
+        let child = cmd.spawn().map_err(|error| {
             ErrorData::internal_error(
                 format!(
                     "failed to spawn fragpipe binary `{}` in {}: {error}",
@@ -68,6 +68,7 @@ impl FragpipeMcp {
                 None,
             )
         })?;
+        let mut child = ManagedChild::new(child);
 
         let started = Instant::now();
         loop {
@@ -93,7 +94,7 @@ impl FragpipeMcp {
             }
 
             if started.elapsed() >= Duration::from_secs(timeout_secs) {
-                terminate_process(&mut child);
+                child.terminate();
                 let output = child.wait_with_output().map_err(|error| {
                     ErrorData::internal_error(
                         format!("failed to collect timed-out fragpipe output: {error}"),
@@ -190,7 +191,7 @@ impl FragpipeMcp {
             cmd.process_group(0);
         }
 
-        let mut child = cmd.spawn().map_err(|error| {
+        let child = cmd.spawn().map_err(|error| {
             ErrorData::internal_error(
                 format!(
                     "failed to spawn cluster-ctl binary `{}` in {}: {error}",
@@ -200,6 +201,7 @@ impl FragpipeMcp {
                 None,
             )
         })?;
+        let mut child = ManagedChild::new(child);
 
         let started = Instant::now();
         loop {
@@ -225,7 +227,7 @@ impl FragpipeMcp {
             }
 
             if started.elapsed() >= Duration::from_secs(timeout_secs) {
-                terminate_process(&mut child);
+                child.terminate();
                 let output = child.wait_with_output().map_err(|error| {
                     ErrorData::internal_error(
                         format!("failed to collect timed-out cluster-ctl output: {error}"),
@@ -273,6 +275,64 @@ impl FragpipeMcp {
             timeout.saturating_mul(max_runs as u64).saturating_add(120),
         )
     }
+
+    fn run_internet(
+        &self,
+        input: InternetRunInput,
+        default_timeout: u64,
+    ) -> Result<CallToolResult, ErrorData> {
+        let max_runs = input.common.max_runs.unwrap_or(1).min(50);
+        let timeout = input.common.timeout.unwrap_or(default_timeout);
+        let mut args = vec!["internet-1v1".to_string()];
+        if let Some(config) = &input.common.config {
+            args.push("--config".into());
+            args.push(config.clone());
+        }
+        args.push("--max-runs".into());
+        args.push(max_runs.to_string());
+        args.push("--timeout-secs".into());
+        args.push(timeout.to_string());
+        if input.common.stop_on_failure == Some(false) {
+            args.push("--stop-on-failure=false".into());
+        }
+        let smoke_workdir = input
+            .smoke_workdir
+            .as_ref()
+            .or(input.common.workdir.as_ref());
+        if let Some(workdir) = smoke_workdir {
+            args.push("--workdir".into());
+            args.push(workdir.clone());
+        }
+        if let Some(game_bin) = input.game_bin {
+            args.push("--game-bin".into());
+            args.push(game_bin);
+        }
+        if let Some(rdv_bin) = input.rdv_bin {
+            args.push("--rdv-bin".into());
+            args.push(rdv_bin);
+        }
+        if let Some(asset_root) = input.asset_root {
+            args.push("--asset-root".into());
+            args.push(asset_root);
+        }
+        if let Some(log_dir) = input.log_dir {
+            args.push("--log-dir".into());
+            args.push(log_dir);
+        }
+        if let Some(pass_marker) = input.pass_marker {
+            args.push("--pass-marker".into());
+            args.push(pass_marker);
+        }
+        if input.common.dry_run.unwrap_or(false) {
+            args.push("--dry-run".into());
+        }
+        let (output, _) = self.run_fragpipe(
+            &input.common,
+            args,
+            timeout.saturating_mul(max_runs as u64).saturating_add(120),
+        )?;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
 }
 
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema, Default)]
@@ -319,6 +379,31 @@ struct RunInput {
     /// WebRTC listen port override.
     #[serde(default)]
     webrtc_port: Option<u16>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct InternetRunInput {
+    #[serde(flatten)]
+    common: CommonInput,
+    /// Chessbender repo root passed to `fragpipe internet-1v1 --workdir`.
+    /// Defaults to `workdir` when omitted.
+    #[serde(default)]
+    smoke_workdir: Option<String>,
+    /// Chessbender binary passed as GAME_BIN.
+    #[serde(default)]
+    game_bin: Option<String>,
+    /// thespan-rendezvous binary passed as RDV_BIN.
+    #[serde(default)]
+    rdv_bin: Option<String>,
+    /// Asset root passed as ASSET_ROOT.
+    #[serde(default)]
+    asset_root: Option<String>,
+    /// Log directory passed as LOG_DIR.
+    #[serde(default)]
+    log_dir: Option<String>,
+    /// Pass marker passed as PASS_MARKER.
+    #[serde(default)]
+    pass_marker: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -432,6 +517,52 @@ struct ClusterCell {
 struct CommandContext {
     fragpipe_bin: String,
     workdir: PathBuf,
+}
+
+struct ManagedChild {
+    child: Option<Child>,
+    pgid: u32,
+}
+
+impl ManagedChild {
+    fn new(child: Child) -> Self {
+        let pgid = child.id();
+        Self {
+            child: Some(child),
+            pgid,
+        }
+    }
+
+    fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        self.child
+            .as_mut()
+            .expect("managed child missing before wait")
+            .try_wait()
+    }
+
+    fn wait_with_output(mut self) -> std::io::Result<Output> {
+        self.child
+            .take()
+            .expect("managed child missing before output collection")
+            .wait_with_output()
+    }
+
+    fn terminate(&mut self) {
+        terminate_process_group(self.pgid);
+    }
+}
+
+impl Drop for ManagedChild {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take()
+            && child.try_wait().ok().flatten().is_none()
+        {
+            #[cfg(not(unix))]
+            let _ = child.kill();
+            self.terminate();
+            let _ = child.wait();
+        }
+    }
 }
 
 /// Shared inputs accepted by every `cluster_*` proxy tool.
@@ -764,10 +895,10 @@ fn command_header(ctx: &CommandContext, args: &[String]) -> String {
     )
 }
 
-fn terminate_process(child: &mut std::process::Child) {
+fn terminate_process_group(pgid: u32) {
     #[cfg(unix)]
     {
-        let pid = child.id().to_string();
+        let pid = pgid.to_string();
         let _ = Command::new("kill")
             .args(["-TERM", &format!("-{pid}")])
             .status();
@@ -778,7 +909,7 @@ fn terminate_process(child: &mut std::process::Child) {
     }
     #[cfg(not(unix))]
     {
-        let _ = child.kill();
+        let _ = pgid;
     }
 }
 
@@ -790,6 +921,14 @@ impl FragpipeMcp {
         Parameters(input): Parameters<RunInput>,
     ) -> Result<CallToolResult, ErrorData> {
         self.run_single("webrtc-1v1", input, 300)
+    }
+
+    #[tool(description = "Run forced-relay internet 1v1 through fragpipe.")]
+    fn repeat_internet_1v1(
+        &self,
+        Parameters(input): Parameters<InternetRunInput>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run_internet(input, 200)
     }
 
     #[tool(description = "Run desktop plus Android test-peer WebRTC Direct 1v1 through fragpipe.")]
@@ -1146,9 +1285,10 @@ impl FragpipeMcp {
             cmd.process_group(0);
         }
 
-        let mut child = cmd.spawn().map_err(|error| {
+        let child = cmd.spawn().map_err(|error| {
             ErrorData::internal_error(format!("failed to spawn nix run: {error}"), None)
         })?;
+        let mut child = ManagedChild::new(child);
 
         let started = Instant::now();
         loop {
@@ -1176,7 +1316,7 @@ impl FragpipeMcp {
                 return Ok((text, ok));
             }
             if started.elapsed() >= Duration::from_secs(timeout_secs) {
-                terminate_process(&mut child);
+                child.terminate();
                 let output = child.wait_with_output().map_err(|error| {
                     ErrorData::internal_error(
                         format!("failed to collect timed-out nix run output: {error}"),
@@ -1206,7 +1346,7 @@ impl ServerHandler for FragpipeMcp {
         info.server_info = Implementation::from_build_env();
         info.instructions = Some(
             "Run fragpipe smoke and fix-loop commands plus cluster proxy operations. \
-             Native tools (webrtc-1v1, android-*) shell out to the configured `fragpipe` \
+             Native tools (webrtc-1v1, internet-1v1, android-*) shell out to the configured `fragpipe` \
              binary; cluster_* tools shell out to `cluster-ctl` (steampipe). Pass \
              workdir/config/cluster explicitly for project-specific runs."
                 .into(),

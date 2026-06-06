@@ -14,8 +14,9 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use runner::{
-    AndroidDoctorOptions, AndroidRunOptions, AndroidUiRunOptions, OutputFormat, WebRtcRunOptions,
-    run_android_1v1, run_android_doctor, run_android_ui, run_webrtc_1v1,
+    AndroidDoctorOptions, AndroidRunOptions, AndroidUiRunOptions, InternetRunOptions, OutputFormat,
+    WebRtcRunOptions, run_android_1v1, run_android_doctor, run_android_ui, run_internet_1v1,
+    run_webrtc_1v1,
 };
 
 #[derive(Debug, Parser)]
@@ -31,6 +32,9 @@ enum Commands {
     /// Run a native WebRTC Direct 1v1 smoke test.
     #[command(name = "webrtc-1v1")]
     Webrtc1v1(WebRtc1v1Args),
+    /// Run the forced-relay internet 1v1 smoke test.
+    #[command(name = "internet-1v1")]
+    Internet1v1(Internet1v1Args),
     /// Run a desktop-listener + Android-emulator joiner WebRTC 1v1 smoke test.
     #[command(name = "android-1v1")]
     Android1v1(Android1v1Args),
@@ -40,6 +44,57 @@ enum Commands {
     /// Validate Android SDK/adb/APK/manifest prerequisites.
     #[command(name = "android-doctor")]
     AndroidDoctor(AndroidDoctorArgs),
+}
+
+#[derive(Debug, Parser)]
+struct Internet1v1Args {
+    /// Project config path.
+    #[arg(long, default_value = "fragpipe.toml")]
+    config: PathBuf,
+
+    /// Number of test runs.
+    #[arg(long)]
+    max_runs: Option<u32>,
+
+    /// Stop after the first failed run.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    stop_on_failure: bool,
+
+    /// Chessbender repository root containing dev/netns/internet-1v1-forced-relay.sh.
+    #[arg(long)]
+    workdir: Option<PathBuf>,
+
+    /// Chessbender binary passed as GAME_BIN.
+    #[arg(long)]
+    game_bin: Option<PathBuf>,
+
+    /// thespan-rendezvous binary passed as RDV_BIN.
+    #[arg(long)]
+    rdv_bin: Option<PathBuf>,
+
+    /// Asset root passed as ASSET_ROOT. Defaults to <workdir>/assets.
+    #[arg(long)]
+    asset_root: Option<PathBuf>,
+
+    /// Log directory passed as LOG_DIR. Defaults under <workdir>/logs/fragpipe.
+    #[arg(long)]
+    log_dir: Option<PathBuf>,
+
+    /// Overall smoke timeout in seconds passed as TIMEOUT_SECS.
+    #[arg(long)]
+    timeout_secs: Option<u64>,
+
+    /// Pass marker passed as PASS_MARKER.
+    #[arg(long)]
+    pass_marker: Option<String>,
+
+    /// Print command and env without launching the smoke.
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Output format.
+    #[arg(long, default_value = "text")]
+    output_format: CliOutputFormat,
 }
 
 #[derive(Debug, Parser)]
@@ -231,6 +286,20 @@ pub fn run(cli: Cli) -> Result<()> {
             remote: args.remote,
             local_ip: args.local_ip,
             webrtc_port: args.webrtc_port,
+            dry_run: args.dry_run,
+            output_format: args.output_format.into(),
+        }),
+        Commands::Internet1v1(args) => run_internet_1v1(InternetRunOptions {
+            config_path: args.config,
+            max_runs: args.max_runs,
+            timeout_secs: args.timeout_secs,
+            stop_on_failure: args.stop_on_failure,
+            workdir: args.workdir,
+            game_bin: args.game_bin,
+            rdv_bin: args.rdv_bin,
+            asset_root: args.asset_root,
+            log_dir: args.log_dir,
+            pass_marker: args.pass_marker,
             dry_run: args.dry_run,
             output_format: args.output_format.into(),
         }),

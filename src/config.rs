@@ -14,6 +14,8 @@ pub struct Config {
     #[serde(default)]
     pub webrtc: WebRtcConfig,
     #[serde(default)]
+    pub internet: InternetConfig,
+    #[serde(default)]
     pub android: Option<AndroidConfig>,
     #[serde(default)]
     pub remote: Vec<RemotePeer>,
@@ -99,6 +101,44 @@ impl Default for WebRtcConfig {
             join_addr_marker: default_join_addr_marker(),
             listener_args: Vec::new(),
             joiner_args: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct InternetConfig {
+    /// Chessbender binary passed to the smoke as GAME_BIN. Defaults to [game].binary.
+    #[serde(default)]
+    pub game_bin: Option<PathBuf>,
+    /// Rendezvous/relay binary passed to the smoke as RDV_BIN.
+    #[serde(default)]
+    pub rdv_bin: Option<PathBuf>,
+    /// Asset root passed as ASSET_ROOT. Defaults to <workdir>/assets.
+    #[serde(default)]
+    pub asset_root: Option<PathBuf>,
+    /// Log directory passed as LOG_DIR. Defaults under <workdir>/logs/fragpipe.
+    #[serde(default)]
+    pub log_dir: Option<PathBuf>,
+    /// Overall smoke timeout passed as TIMEOUT_SECS.
+    #[serde(default = "default_internet_timeout_secs")]
+    pub timeout_secs: u64,
+    #[serde(default = "default_max_runs")]
+    pub max_runs: u32,
+    /// Pass marker passed as PASS_MARKER and used for output classification.
+    #[serde(default = "default_internet_pass_marker")]
+    pub pass_marker: String,
+}
+
+impl Default for InternetConfig {
+    fn default() -> Self {
+        Self {
+            game_bin: None,
+            rdv_bin: None,
+            asset_root: None,
+            log_dir: None,
+            timeout_secs: default_internet_timeout_secs(),
+            max_runs: default_max_runs(),
+            pass_marker: default_internet_pass_marker(),
         }
     }
 }
@@ -282,12 +322,20 @@ fn default_timeout_secs() -> u64 {
     300
 }
 
+fn default_internet_timeout_secs() -> u64 {
+    200
+}
+
 fn default_max_runs() -> u32 {
     1
 }
 
 fn default_join_addr_marker() -> String {
     "WEBRTC_JOIN_ADDR=".into()
+}
+
+fn default_internet_pass_marker() -> String {
+    "GAME OVER".into()
 }
 
 fn default_android_activity() -> String {
