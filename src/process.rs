@@ -110,3 +110,86 @@ fn spawn_noop_child() -> Result<Child> {
         .spawn()
         .context("failed to spawn dry-run placeholder process")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_success_returns_ok_for_success_status() {
+        let status = Command::new("true").status().unwrap();
+        assert!(ensure_success(status, "true").is_ok());
+    }
+
+    #[test]
+    fn ensure_success_errors_for_failure_status() {
+        let status = Command::new("false").status().unwrap();
+        let result = ensure_success(status, "false");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("false"));
+    }
+
+    #[test]
+    fn remove_if_exists_removes_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.txt");
+        std::fs::write(&path, "content").unwrap();
+        remove_if_exists(&path).unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn remove_if_exists_ok_for_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent.txt");
+        remove_if_exists(&path).unwrap();
+    }
+
+    #[test]
+    fn apply_env_sets_environment_variables() {
+        let env = vec![EnvPair {
+            name: "FRAGPIPE_TEST_KEY".into(),
+            value: "test_val".into(),
+        }];
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("echo $FRAGPIPE_TEST_KEY");
+        apply_env(&mut cmd, &env);
+        let output = cmd.output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "test_val");
+    }
+
+    #[test]
+    fn apply_env_multiple_pairs() {
+        let env = vec![
+            EnvPair {
+                name: "KEY_A".into(),
+                value: "VAL_A".into(),
+            },
+            EnvPair {
+                name: "KEY_B".into(),
+                value: "VAL_B".into(),
+            },
+        ];
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("echo $KEY_A-$KEY_B");
+        apply_env(&mut cmd, &env);
+        let output = cmd.output().unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "VAL_A-VAL_B"
+        );
+    }
+
+    #[test]
+    fn kill_child_terminates_running_process() {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 30")
+            .spawn()
+            .unwrap();
+        // Should not panic
+        kill_child(&mut child);
+        // Process should be gone
+        assert!(child.try_wait().unwrap().is_some());
+    }
+}

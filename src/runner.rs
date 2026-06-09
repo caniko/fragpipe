@@ -1212,4 +1212,213 @@ mod tests {
         assert_eq!(config.internet.timeout_secs, 200);
         assert_eq!(config.internet.pass_marker, "GAME OVER");
     }
+
+    #[test]
+    fn first_marker_line_finds_matching_line() {
+        let output = "line1\nPASS: all good\nline3\n";
+        assert_eq!(
+            first_marker_line(output, "PASS:"),
+            Some("PASS: all good")
+        );
+    }
+
+    #[test]
+    fn first_marker_line_returns_none_when_not_found() {
+        let output = "line1\nline2\n";
+        assert_eq!(first_marker_line(output, "PASS:"), None);
+    }
+
+    #[test]
+    fn first_marker_line_finds_last_match() {
+        let output = "PASS: first\nsome log\nPASS: second";
+        assert_eq!(
+            first_marker_line(output, "PASS:"),
+            Some("PASS: first")
+        );
+    }
+
+    #[test]
+    fn internet_log_excerpt_empty_log_returns_empty() {
+        assert_eq!(internet_log_excerpt(""), "");
+    }
+
+    #[test]
+    fn internet_log_excerpt_returns_at_most_eight_lines() {
+        let lines: Vec<String> = (1..=20).map(|i| format!("line {i}")).collect();
+        let output = lines.join("\n");
+        let excerpt = internet_log_excerpt(&output);
+        assert!(excerpt.starts_with("; log tail:"));
+        assert_eq!(excerpt.matches('\n').count(), 8);
+        assert!(excerpt.contains("line 13"));
+        assert!(excerpt.contains("line 20"));
+    }
+
+    #[test]
+    fn internet_log_excerpt_less_than_eight_lines() {
+        let output = "line1\nline2\n";
+        let excerpt = internet_log_excerpt(output);
+        assert_eq!(excerpt.matches('\n').count(), 2);
+    }
+
+    #[test]
+    fn timestamp_secs_is_positive() {
+        assert!(timestamp_secs() > 1700000000);
+    }
+
+    #[test]
+    fn emit_report_text_format_does_not_error() {
+        let report = RunReport {
+            run: 1,
+            status: RunStatus::Pass,
+            label: "test".into(),
+            duration_secs: 5,
+        };
+        emit_report(OutputFormat::Text, &report).unwrap();
+    }
+
+    #[test]
+    fn emit_report_jsonl_format_does_not_error() {
+        let report = RunReport {
+            run: 1,
+            status: RunStatus::Pass,
+            label: "test".into(),
+            duration_secs: 5,
+        };
+        emit_report(OutputFormat::Jsonl, &report).unwrap();
+    }
+
+    #[test]
+    fn apply_android_overrides_sets_device_flag() {
+        let mut cfg = create_test_android_cfg();
+        assert_eq!(cfg.target, AndroidTarget::Emulator);
+        apply_android_overrides(&mut cfg, None, true);
+        assert_eq!(cfg.target, AndroidTarget::Device);
+    }
+
+    #[test]
+    fn apply_android_overrides_sets_adb_serial() {
+        let mut cfg = create_test_android_cfg();
+        assert!(cfg.adb_serial.is_none());
+        apply_android_overrides(&mut cfg, Some("my-serial".into()), false);
+        assert_eq!(cfg.adb_serial, Some("my-serial".into()));
+    }
+
+    #[test]
+    fn apply_android_overrides_no_changes_when_no_overrides() {
+        let mut cfg = create_test_android_cfg();
+        let original_target = cfg.target;
+        let original_serial = cfg.adb_serial.clone();
+        apply_android_overrides(&mut cfg, None, false);
+        assert_eq!(cfg.target, original_target);
+        assert_eq!(cfg.adb_serial, original_serial);
+    }
+
+    #[test]
+    fn android_ui_config_preserves_fields_without_ui_overrides() {
+        let cfg = create_test_android_cfg();
+        let ui_cfg = android_ui_config(cfg.clone());
+        assert_eq!(ui_cfg.apk_path, cfg.apk_path);
+        assert_eq!(ui_cfg.package_name, cfg.package_name);
+        assert_eq!(ui_cfg.activity_name, cfg.activity_name);
+    }
+
+    #[test]
+    fn android_ui_config_applies_all_ui_overrides() {
+        let cfg = AndroidConfig {
+            target: AndroidTarget::Emulator,
+            avd_name: "test-avd".into(),
+            adb_serial: None,
+            apk_path: PathBuf::from("original.apk"),
+            apk_build_command: None,
+            ui_apk_path: Some(PathBuf::from("ui.apk")),
+            ui_package_name: Some("com.ui.pkg".into()),
+            ui_activity_name: Some("UiActivity".into()),
+            ui_log_tag: Some("UI_TAG".into()),
+            ui_apk_build_command: Some("build-ui".into()),
+            package_name: "com.original.pkg".into(),
+            activity_name: "OriginalActivity".into(),
+            log_tag: "original".into(),
+            rendezvous_path: "/data/local/tmp/rendezvous.txt".into(),
+            logcat_log: PathBuf::from("fragpipe-android.log"),
+            emulator_bin: None,
+            adb_bin: None,
+            emulator_args: vec![],
+            boot_timeout_secs: 180,
+            launch_config_path: "/data/local/tmp/config.json".into(),
+            screenshot_dir: PathBuf::from("screenshots"),
+        };
+        let ui_cfg = android_ui_config(cfg);
+        assert_eq!(ui_cfg.apk_path, PathBuf::from("ui.apk"));
+        assert_eq!(ui_cfg.package_name, "com.ui.pkg");
+        assert_eq!(ui_cfg.activity_name, "UiActivity");
+        assert_eq!(ui_cfg.log_tag, "UI_TAG");
+        assert_eq!(
+            ui_cfg.apk_build_command,
+            Some("build-ui".into())
+        );
+    }
+
+    #[test]
+    fn report_from_result_ok_maps_to_pass() {
+        let result: Result<String> = Ok("all good".into());
+        let report = report_from_result(42, Instant::now(), result);
+        assert_eq!(report.run, 42);
+        assert_eq!(report.status, RunStatus::Pass);
+        assert_eq!(report.label, "all good");
+    }
+
+    #[test]
+    fn report_from_result_timeout_error_maps_to_timeout() {
+        let result: Result<String> = Err(anyhow::anyhow!("operation timed out after 300s"));
+        let report = report_from_result(1, Instant::now(), result);
+        assert_eq!(report.status, RunStatus::Timeout);
+    }
+
+    #[test]
+    fn report_from_result_other_error_maps_to_fail() {
+        let result: Result<String> = Err(anyhow::anyhow!("some other error"));
+        let report = report_from_result(1, Instant::now(), result);
+        assert_eq!(report.status, RunStatus::Fail);
+    }
+
+    #[test]
+    fn run_report_serializes_to_json() {
+        let report = RunReport {
+            run: 3,
+            status: RunStatus::Pass,
+            label: "test-label".into(),
+            duration_secs: 42,
+        };
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains(r#""run":3"#));
+        assert!(json.contains(r#""status":"Pass""#));
+        assert!(json.contains(r#""label":"test-label""#));
+        assert!(json.contains(r#""duration_secs":42"#));
+    }
+
+    fn create_test_android_cfg() -> AndroidConfig {
+        AndroidConfig {
+            target: AndroidTarget::Emulator,
+            avd_name: "test-avd".into(),
+            adb_serial: None,
+            apk_path: PathBuf::from("test.apk"),
+            apk_build_command: None,
+            ui_apk_path: None,
+            ui_package_name: None,
+            ui_activity_name: None,
+            ui_log_tag: None,
+            ui_apk_build_command: None,
+            package_name: "com.test".into(),
+            activity_name: "TestActivity".into(),
+            log_tag: "test".into(),
+            rendezvous_path: "/data/local/tmp/rendezvous.txt".into(),
+            logcat_log: PathBuf::from("fragpipe-android.log"),
+            emulator_bin: None,
+            adb_bin: None,
+            emulator_args: vec![],
+            boot_timeout_secs: 180,
+            launch_config_path: "/data/local/tmp/config.json".into(),
+            screenshot_dir: PathBuf::from("screenshots"),
+        }
+    }
 }

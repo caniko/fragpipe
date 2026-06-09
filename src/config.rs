@@ -395,3 +395,284 @@ fn default_fatal_markers() -> Vec<String> {
         "Graceful shutdown: exit_code=".into(),
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn minimal_config_deserializes_with_defaults() {
+        let config: Config = toml::from_str(
+            r#"
+            [game]
+            binary = "game"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.game.name, "game");
+        assert!(config.android.is_none());
+        assert!(config.remote.is_empty());
+    }
+
+    #[test]
+    fn all_config_sections_have_sensible_defaults() {
+        let config: Config = toml::from_str(
+            r#"
+            [game]
+            binary = "game"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.webrtc.local_ip, "127.0.0.1".parse::<IpAddr>().unwrap());
+        assert_eq!(config.webrtc.port, 27200);
+        assert_eq!(config.webrtc.timeout_secs, 300);
+        assert_eq!(config.webrtc.max_runs, 1);
+        assert_eq!(config.webrtc.join_addr_marker, "WEBRTC_JOIN_ADDR=");
+        assert_eq!(config.internet.timeout_secs, 200);
+        assert_eq!(config.internet.max_runs, 1);
+        assert_eq!(config.internet.pass_marker, "GAME OVER");
+        assert_eq!(config.process.pass_markers, vec!["GAME OVER".to_string()]);
+        assert!(config.process.fatal_markers.contains(&"panic".to_string()));
+        assert!(config.process.fatal_markers.contains(&"[FATAL]".to_string()));
+    }
+
+    #[test]
+    fn game_config_default_values() {
+        let config: Config = toml::from_str(
+            r#"
+            [game]
+            binary = "game"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.game.name, "game");
+        assert_eq!(config.game.listener_log, PathBuf::from("fragpipe-listener.log"));
+        assert_eq!(config.game.joiner_log, PathBuf::from("fragpipe-joiner.log"));
+        assert!(config.game.build_command.is_none());
+        assert!(config.game.env.is_empty());
+    }
+
+    #[test]
+    fn select_remote_finds_matching_peer() {
+        let config: Config = toml::from_str(
+            r#"
+            [game]
+            binary = "game"
+            [[remote]]
+            name = "peer1"
+            host = "host1"
+            remote_dir = "/remote"
+            [[remote]]
+            name = "peer2"
+            host = "host2"
+            remote_dir = "/remote2"
+            "#,
+        )
+        .unwrap();
+        let peer = select_remote(&config, "peer1").unwrap();
+        assert_eq!(peer.name, "peer1");
+        assert_eq!(peer.host, "host1");
+    }
+
+    #[test]
+    fn select_remote_errors_on_missing_peer() {
+        let config: Config = toml::from_str(
+            r#"
+            [game]
+            binary = "game"
+            "#,
+        )
+        .unwrap();
+        assert!(select_remote(&config, "nonexistent").is_err());
+    }
+
+    #[test]
+    fn project_root_defaults_to_current_dir() {
+        let config: Config = toml::from_str(
+            r#"
+            [game]
+            binary = "game"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(project_root(&config), Path::new("."));
+    }
+
+    #[test]
+    fn project_root_uses_configured_path() {
+        let config: Config = toml::from_str(
+            r#"
+            [game]
+            binary = "game"
+            project_root = "/some/project"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(project_root(&config), Path::new("/some/project"));
+    }
+
+    #[test]
+    fn resolve_path_preserves_absolute_paths() {
+        assert_eq!(
+            resolve_path(Path::new("/root"), Path::new("/absolute/path")),
+            PathBuf::from("/absolute/path")
+        );
+    }
+
+    #[test]
+    fn resolve_path_joins_relative_paths() {
+        assert_eq!(
+            resolve_path(Path::new("/root"), Path::new("relative/path")),
+            PathBuf::from("/root/relative/path")
+        );
+    }
+
+    #[test]
+    fn binary_file_name_extracts_filename() {
+        assert_eq!(
+            binary_file_name(Path::new("/some/dir/game_bin")).unwrap(),
+            "game_bin"
+        );
+    }
+
+    #[test]
+    fn binary_file_name_errors_on_root_path() {
+        assert!(binary_file_name(Path::new("/")).is_err());
+    }
+
+    #[test]
+    fn kill_name_uses_explicit_process_name() {
+        let config: Config = toml::from_str(
+            r#"
+            [game]
+            binary = "game"
+            [process]
+            kill_name = "custom-kill"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(kill_name(&config).unwrap(), "custom-kill");
+    }
+
+    #[test]
+    fn kill_name_falls_back_to_binary_filename() {
+        let config: Config = toml::from_str(
+            r#"
+            [game]
+            binary = "/path/to/game_bin"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(kill_name(&config).unwrap(), "game_bin");
+    }
+
+    #[test]
+    fn android_target_emulator_deserializes_from_kebab() {
+        let config: Config = toml::from_str(
+            r#"
+            [game]
+            binary = "game"
+            [android]
+            target = "emulator"
+            apk_path = "/apk"
+            package_name = "com.test"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            config.android.as_ref().unwrap().target,
+            AndroidTarget::Emulator
+        );
+    }
+
+    #[test]
+    fn android_target_device_deserializes_from_kebab() {
+        let config: Config = toml::from_str(
+            r#"
+            [game]
+            binary = "game"
+            [android]
+            target = "device"
+            apk_path = "/apk"
+            package_name = "com.test"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            config.android.as_ref().unwrap().target,
+            AndroidTarget::Device
+        );
+    }
+
+    #[test]
+    fn remote_peer_defaults_log_file() {
+        let config: Config = toml::from_str(
+            r#"
+            [game]
+            binary = "game"
+            [[remote]]
+            name = "peer"
+            host = "host"
+            remote_dir = "/remote"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.remote[0].log_file, "game.log");
+    }
+
+    #[test]
+    fn full_config_deserializes_with_android_and_remote() {
+        let config: Config = toml::from_str(
+            r#"
+            [game]
+            name = "test-game"
+            binary = "bin/test"
+            build_command = "cargo build"
+            listener_extra_args = ["--headless"]
+            joiner_extra_args = ["--connect"]
+
+            [process]
+            kill_name = "test"
+            pass_markers = ["SUCCESS"]
+            fatal_markers = ["CRASH"]
+
+            [webrtc]
+            local_ip = "10.0.0.1"
+            port = 9090
+            timeout_secs = 60
+            max_runs = 3
+
+            [internet]
+            timeout_secs = 100
+            max_runs = 2
+            pass_marker = "WIN"
+
+            [android]
+            apk_path = "/apk"
+            package_name = "com.test"
+            avd_name = "Test_AVD"
+            adb_serial = "emulator-5554"
+            boot_timeout_secs = 120
+
+            [[remote]]
+            name = "server"
+            host = "10.0.0.2"
+            remote_dir = "/app"
+            binary_name = "remote-bin"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.game.name, "test-game");
+        assert_eq!(config.webrtc.local_ip, "10.0.0.1".parse::<IpAddr>().unwrap());
+        assert_eq!(config.webrtc.port, 9090);
+        assert_eq!(config.internet.timeout_secs, 100);
+        assert_eq!(config.internet.max_runs, 2);
+        assert_eq!(config.internet.pass_marker, "WIN");
+        let android = config.android.as_ref().unwrap();
+        assert_eq!(android.avd_name, "Test_AVD");
+        assert_eq!(android.adb_serial.as_deref(), Some("emulator-5554"));
+        assert_eq!(android.boot_timeout_secs, 120);
+        assert_eq!(config.remote.len(), 1);
+        assert_eq!(config.remote[0].binary_name.as_deref(), Some("remote-bin"));
+    }
+}

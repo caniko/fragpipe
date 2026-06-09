@@ -142,3 +142,119 @@ fn remote_binary_name(config: &Config, remote: &RemotePeer) -> Result<String> {
         None => binary_file_name(&config.game.binary),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::DeployPath;
+    use std::path::PathBuf;
+
+    fn test_config() -> Config {
+        toml::from_str(
+            r#"
+            [game]
+            binary = "game"
+            "#,
+        )
+        .unwrap()
+    }
+
+    fn test_remote() -> RemotePeer {
+        RemotePeer {
+            name: "test-peer".into(),
+            host: "test-host".into(),
+            remote_dir: "/remote".into(),
+            log_file: "game.log".into(),
+            binary_name: None,
+            assets_dir: None,
+            deploy: vec![],
+            env: vec![],
+            join_args: vec![],
+        }
+    }
+
+    #[test]
+    fn deploy_dry_run_succeeds() {
+        let config = test_config();
+        let remote = test_remote();
+        deploy(&config, &remote, true).unwrap();
+    }
+
+    #[test]
+    fn deploy_dry_run_with_assets_dir() {
+        let config: Config = toml::from_str(
+            r#"
+            [game]
+            binary = "game"
+            assets_dir = "assets"
+            "#,
+        )
+        .unwrap();
+        let remote = test_remote();
+        deploy(&config, &remote, true).unwrap();
+    }
+
+    #[test]
+    fn deploy_dry_run_with_custom_remote_assets() {
+        let config: Config = toml::from_str(
+            r#"
+            [game]
+            binary = "game"
+            assets_dir = "assets"
+            "#,
+        )
+        .unwrap();
+        let mut remote = test_remote();
+        remote.assets_dir = Some(PathBuf::from("/remote/custom-assets"));
+        deploy(&config, &remote, true).unwrap();
+    }
+
+    #[test]
+    fn deploy_dry_run_with_deploy_paths() {
+        let config = test_config();
+        let mut remote = test_remote();
+        remote.deploy = vec![DeployPath {
+            source: PathBuf::from("extra-file"),
+            target: "/remote/extra-file".into(),
+        }];
+        deploy(&config, &remote, true).unwrap();
+    }
+
+    #[test]
+    fn launch_remote_dry_run_succeeds() {
+        let config = test_config();
+        let remote = test_remote();
+        launch_remote(&config, &remote, &[], true).unwrap();
+    }
+
+    #[test]
+    fn launch_remote_dry_run_with_args() {
+        let config = test_config();
+        let remote = test_remote();
+        launch_remote(&config, &remote, &["--join".into(), "addr".into()], true).unwrap();
+    }
+
+    #[test]
+    fn stop_remote_dry_run_succeeds() {
+        let config = test_config();
+        let remote = test_remote();
+        stop_remote(&config, &remote, true).unwrap();
+    }
+
+    #[test]
+    fn remote_binary_name_uses_explicit_name() {
+        let config = test_config();
+        let mut remote = test_remote();
+        remote.binary_name = Some("custom-bin".into());
+        let name = remote_binary_name(&config, &remote).unwrap();
+        assert_eq!(name, "custom-bin");
+    }
+
+    #[test]
+    fn remote_binary_name_falls_back_to_game_binary() {
+        let config = test_config();
+        let remote = test_remote();
+        let name = remote_binary_name(&config, &remote).unwrap();
+        assert_eq!(name, "game");
+    }
+}

@@ -338,3 +338,182 @@ pub fn run(cli: Cli) -> Result<()> {
         }),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_webrtc_1v1_subcommand() {
+        let cli = Cli::try_parse_from(["fragpipe", "webrtc-1v1", "--config", "test.toml"]).unwrap();
+        assert!(matches!(cli.command, Commands::Webrtc1v1(_)));
+    }
+
+    #[test]
+    fn parse_internet_1v1_subcommand() {
+        let cli = Cli::try_parse_from(["fragpipe", "internet-1v1"]).unwrap();
+        assert!(matches!(cli.command, Commands::Internet1v1(_)));
+    }
+
+    #[test]
+    fn parse_android_1v1_subcommand() {
+        let cli = Cli::try_parse_from(["fragpipe", "android-1v1"]).unwrap();
+        assert!(matches!(cli.command, Commands::Android1v1(_)));
+    }
+
+    #[test]
+    fn parse_android_ui_subcommand() {
+        let cli = Cli::try_parse_from(["fragpipe", "android-ui"]).unwrap();
+        assert!(matches!(cli.command, Commands::AndroidUi(_)));
+    }
+
+    #[test]
+    fn parse_android_doctor_subcommand() {
+        let cli = Cli::try_parse_from(["fragpipe", "android-doctor"]).unwrap();
+        assert!(matches!(cli.command, Commands::AndroidDoctor(_)));
+    }
+
+    #[test]
+    fn webrtc_1v1_default_values() {
+        let cli = Cli::try_parse_from(["fragpipe", "webrtc-1v1"]).unwrap();
+        if let Commands::Webrtc1v1(args) = cli.command {
+            assert_eq!(args.config, PathBuf::from("fragpipe.toml"));
+            assert!(args.max_runs.is_none());
+            assert!(args.timeout.is_none());
+            assert!(!args.no_build);
+            assert!(!args.no_deploy);
+            assert!(args.remote.is_none());
+            assert!(args.local_ip.is_none());
+            assert!(args.webrtc_port.is_none());
+            assert!(!args.dry_run);
+            assert!(matches!(args.output_format, CliOutputFormat::Text));
+        } else {
+            panic!("expected Webrtc1v1 variant");
+        }
+    }
+
+    #[test]
+    fn webrtc_1v1_all_flags() {
+        let cli = Cli::try_parse_from([
+            "fragpipe",
+            "webrtc-1v1",
+            "--config",
+            "custom.toml",
+            "--max-runs",
+            "5",
+            "--timeout",
+            "120",
+            "--no-build",
+            "--no-deploy",
+            "--remote",
+            "server1",
+            "--local-ip",
+            "10.0.0.1",
+            "--webrtc-port",
+            "8080",
+            "--dry-run",
+            "--output-format",
+            "jsonl",
+        ])
+        .unwrap();
+        if let Commands::Webrtc1v1(args) = cli.command {
+            assert_eq!(args.config, PathBuf::from("custom.toml"));
+            assert_eq!(args.max_runs, Some(5));
+            assert_eq!(args.timeout, Some(120));
+            assert!(args.no_build);
+            assert!(args.no_deploy);
+            assert_eq!(args.remote, Some("server1".into()));
+            assert_eq!(args.local_ip, Some("10.0.0.1".parse().unwrap()));
+            assert_eq!(args.webrtc_port, Some(8080));
+            assert!(args.dry_run);
+            assert!(matches!(args.output_format, CliOutputFormat::Jsonl));
+        } else {
+            panic!("expected Webrtc1v1 variant");
+        }
+    }
+
+    #[test]
+    fn internet_1v1_with_flags() {
+        let cli = Cli::try_parse_from([
+            "fragpipe",
+            "internet-1v1",
+            "--workdir",
+            "/workspace",
+            "--game-bin",
+            "game",
+            "--rdv-bin",
+            "rdv",
+            "--dry-run",
+        ])
+        .unwrap();
+        if let Commands::Internet1v1(args) = cli.command {
+            assert_eq!(args.workdir, Some(PathBuf::from("/workspace")));
+            assert_eq!(args.game_bin, Some(PathBuf::from("game")));
+            assert_eq!(args.rdv_bin, Some(PathBuf::from("rdv")));
+            assert!(args.dry_run);
+        } else {
+            panic!("expected Internet1v1 variant");
+        }
+    }
+
+    #[test]
+    fn android_1v1_with_mode_flags() {
+        let cli = Cli::try_parse_from([
+            "fragpipe",
+            "android-1v1",
+            "--device",
+            "--adb-serial",
+            "emulator-5554",
+            "--no-install",
+            "--dry-run",
+        ])
+        .unwrap();
+        if let Commands::Android1v1(args) = cli.command {
+            assert!(args.device);
+            assert_eq!(args.adb_serial, Some("emulator-5554".into()));
+            assert!(args.no_install);
+            assert!(args.dry_run);
+        } else {
+            panic!("expected Android1v1 variant");
+        }
+    }
+
+    #[test]
+    fn android_ui_with_launch_config() {
+        let cli = Cli::try_parse_from([
+            "fragpipe",
+            "android-ui",
+            "--launch-config",
+            r#"{"difficulty":"easy"}"#,
+            "--dry-run",
+        ])
+        .unwrap();
+        if let Commands::AndroidUi(args) = cli.command {
+            assert_eq!(
+                args.launch_config,
+                Some(r#"{"difficulty":"easy"}"#.into())
+            );
+            assert!(args.dry_run);
+        } else {
+            panic!("expected AndroidUi variant");
+        }
+    }
+
+    #[test]
+    fn android_doctor_requires_no_extra_args() {
+        let cli = Cli::try_parse_from(["fragpipe", "android-doctor"]).unwrap();
+        assert!(matches!(cli.command, Commands::AndroidDoctor(_)));
+    }
+
+    #[test]
+    fn cli_output_format_text_to_output_format() {
+        assert_eq!(
+            OutputFormat::from(CliOutputFormat::Text),
+            OutputFormat::Text
+        );
+        assert_eq!(
+            OutputFormat::from(CliOutputFormat::Jsonl),
+            OutputFormat::Jsonl
+        );
+    }
+}
