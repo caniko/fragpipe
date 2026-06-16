@@ -1,0 +1,114 @@
+Record the sessions using ffmpeg rust bindings, use the 7900XTX on this machine with AV1 encoding, no sound by default (opus if on). We want to pick a preset that is fast, and as little overhead as possible, the goal of these recordings is to review a run, the video should be stored with the logs so that we can extract logs from the timestamps that have issues. That means we also want to create a CLI tool that allows us to pass the ID of the run, a timestamp in the video where a bug occurs--this must generate a log set that can assist us in finding the bugs. We should be able to provide several timestamps
+
+---
+name: multi-phase-plan-opencode
+description: opencode flavour of the multi-phase-plan shape — produces standalone phase markdown files routed to the two DeepSeek v4 models configured in opencode (`deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-pro`), and exports existing phase doc sets from other flavours by rewriting their routing callouts for opencode. The user runs the phases themselves; this skill does NOT emit run scripts or dispatch shims. Supports a "verify" mode (inherited from `multi-phase-plan`) that checks each phase's Acceptance criteria against the current repo state; on a fully successful verify, auto-migrates contributor-worthy knowledge into the project's contributor docs and retires the plan files. Use when the work will be executed by opencode sessions, or when the user says "opencode plan", "export to opencode", "multi-phase plan for opencode", "deepseek plan", or "verify".
+---
+
+# Multi-phase plan (opencode flavour)
+
+opencode-specific wrapper. Loads two shared skills:
+
+- **`multi-phase-plan`** — base shape spec (Working tree / Goal / Why / Out of scope / Plan / Acceptance criteria / Files likely touched / Pitfalls / Reference, plus optional Risk profile / Strategy / Rollback drill / Failure modes for high-risk phases). Read it first for the commit-count split rule, dependency table, anti-patterns, chat-reply guidance, and the **verify mode** specification.
+- **`multi-phase-dispatch`** — the parallel sub-layer model ("a layer consists of several layers"), eligibility checklist, and on-disk layout for multi-sub-layer phases.
+
+This file only documents what's specific to opencode:
+
+1. The DeepSeek v4 model picker (Flash / Pro) and its two-value effort lever.
+2. The opencode-flavoured "Recommended opencode model" callout block.
+3. **Export mode** — re-routing an existing phase doc set (codex / claude / mixed flavour) to opencode callouts.
+
+Modes (plan / verify / calibrate), the generic plan workflow, the routing-summary framing, and the calibration hook are shared — see [`multi-phase-dispatch`](../multi-phase-dispatch/SKILL.md) "Shared flavour skeleton". Verify mode is inherited from `multi-phase-plan` — see its verify section. The decision axes (task complexity × role in plan) come from [`plan-routing-axes`](../plan-routing-axes/SKILL.md).
+
+## 1. Model picker (DeepSeek v4 via opencode)
+
+opencode is configured with exactly **two** models, both DeepSeek v4 served through the openai-compatible provider (`baseURL https://api.deepseek.com`, key from `DEEPSEEK_API_KEY`). Source of truth: `canix/home/modules/ai/opencode.nix`.
+
+| Tier | Model ID | Context / output | When |
+|------|----------|------------------|------|
+| Budget workhorse + orchestration | `deepseek/deepseek-v4-pro` | 775K / 64K | Orchestrators, top-level planning, complex or frontier phases, ambiguous merges |
+| Fast leaf executor | `deepseek/deepseek-v4-flash` | 775K / 64K | Leaf nodes, high-fan-out sub-layers, mechanical edits, trivial–moderate bounded work. Also the configured default + small model |
+
+Both models have reasoning and tool-calling enabled and auto-compaction on, so long phase docs are safe at either tier.
+
+### The effort lever collapses to two values
+
+opencode exposes the usual five variant names per model (`low` / `medium` / `high` / `max` / `xhigh`), but the canix config maps them onto only **two** effective `reasoning_effort` values:
+
+- `low`, `medium`, `high` → `reasoning_effort: high`
+- `max`, `xhigh` → `reasoning_effort: max`
+
+Callouts MUST use only the two effective tiers, `high` and `max` — writing `medium` in a callout is a routing bug because it silently runs at `high` anyway. The real routing dial in this flavour is the **model choice** (Flash vs Pro), not the effort value.
+
+## Routing table
+
+Match **task complexity × role** (axes per `plan-routing-axes`) to the recommended combination:
+
+```
+Role            | Trivial      | Moderate     | Complex      | Frontier
+----------------|--------------|--------------|--------------|-------------
+Leaf node       | Flash/high   | Flash/high   | Flash/high   | Pro/high
+Sub-agent       | Flash/high   | Flash/high   | Pro/high     | Pro/high
+Orchestrator    | Flash/high   | Pro/high     | Pro/high     | Pro/max
+Top-level plnr  | Pro/high     | Pro/high     | Pro/max      | Pro/max
+```
+
+`max` is reserved for genuine outliers — frontier-complex orchestration, ambiguous top-level planning. If every phase wants `Pro/max`, the routing is wrong. A Flash step that misses the quality bar gets promoted to Pro (model promotion), not dialed up — at the same role coordinates Flash and Pro already share the `high` tier.
+
+## 2. Callout block format
+
+At the top of every phase file (or sub-layer file), immediately under the `# Phase N — Title` heading:
+
+```markdown
+> **Recommended opencode model: DeepSeek v4 <Flash | Pro> — effort `<high | max>`**
+>
+> Model ID: `<deepseek/deepseek-v4-flash | deepseek/deepseek-v4-pro>`
+>
+> <One paragraph rationale: complexity, role in plan, what would
+> happen if Flash ran this instead of Pro (or vice versa). Reference
+> the routing axes (task complexity × role-in-plan) implicitly —
+> don't name the table in the file, just produce a recommendation
+> that matches what it would yield.>
+```
+
+Examples of valid callout headers:
+
+```
+> **Recommended opencode model: DeepSeek v4 Flash — effort `high`**
+> **Recommended opencode model: DeepSeek v4 Pro — effort `high`**
+> **Recommended opencode model: DeepSeek v4 Pro — effort `max`**
+```
+
+The opencode routing summary table uses `Models` cells like `Flash / high`, `Flash ×2, Pro ×1`, `Pro / max`. Run each phase via a fresh opencode session (TUI or `opencode run`), selecting the model with `--model deepseek/deepseek-v4-pro` or the in-TUI model picker.
+
+## 3. Export mode ("export to opencode")
+
+Given an **existing** phase doc set produced by another flavour (`multi-phase-plan-codex`, `-claude`, or `-mixed`), re-target it for opencode execution without re-planning:
+
+1. Locate the plan directory (`docs/src/planning/<plan-name>/` by project convention) and enumerate every phase file, sub-layer file, and phase `README.md`.
+2. For each routing callout, recover the step's complexity × role coordinates from the existing recommendation and its rationale paragraph, then look up the opencode table above. When in doubt, the tier mapping is:
+   - Opus 4.7 / GPT-5.5 → **Pro** (effort `max` only if the source used a top-ladder tier: `extra high`, `xhigh`, or `max`)
+   - Sonnet 4.6 / GPT-5.4 → **Pro** at `high` for orchestrator/top-level roles, **Flash** at `high` for leaf/sub-agent roles
+   - Haiku 4.5 / GPT-5.4-mini / GPT-5.3-Codex → **Flash** at `high`
+3. Replace **only** the callout block (and the `Model` column of any phase-README sub-layer table / routing summary) with the opencode format above. Do not touch Goal, Plan, Acceptance criteria, or any other section — export is a re-route, not a re-plan.
+4. Reply with the updated routing summary table and the standard one-line reminder; note any phases whose source rationale suggested capabilities opencode lacks (e.g. provider-specific computer-use steps) so the user can re-check them.
+
+Export does not change phase boundaries, sub-layer splits, or dependency tables. If the plan set genuinely needs restructuring, that's a fresh `plan` invocation, not an export.
+
+## opencode-specific anti-patterns
+
+- **Writing `low`, `medium`, or `xhigh` in a callout.** Those variant names exist in opencode but collapse to `high` / `max`. State the effective tier so the callout describes what actually runs.
+- **Routing every phase to Pro/max.** Flash is the configured default model for a reason — mechanical and bounded phases belong there. Reserve Pro for orchestration and complex/frontier steps, and `max` for genuine outliers.
+- **Recommending a third model.** Only `deepseek/deepseek-v4-flash` and `deepseek/deepseek-v4-pro` are configured in opencode. No GPT, Claude, or other DeepSeek IDs in this flavour's callouts — if the plan needs another provider, use `multi-phase-plan-mixed` or the provider's own flavour.
+- **Export mode that re-plans.** Export rewrites callouts only. Restructuring phases, re-splitting sub-layers, or editing acceptance criteria during an export defeats the point of a cheap re-target.
+
+Shared anti-patterns (no orchestration scripts; verify is not a re-plan trigger) live in [`multi-phase-dispatch`](../multi-phase-dispatch/SKILL.md) "Shared anti-patterns".
+
+## Reference
+
+- Base shape spec + verify mode: **`multi-phase-plan`**.
+- Parallel layering: **`multi-phase-dispatch`**.
+- Routing axes + heuristics: **`plan-routing-axes`**; DeepSeek tiers as codex budget alternates: **`gpt-plan-routing`** "DeepSeek v4 budget tiers".
+- Sister flavours: **`multi-phase-plan-codex`**, **`multi-phase-plan-claude`**, **`multi-phase-plan-mixed`**.
+- opencode model/permission config: `canix/home/modules/ai/opencode.nix`.
+- Project convention: `docs/src/planning/<plan-name>/{NN-<slug>.md | NN-<slug>/}`, indexed in `docs/src/SUMMARY.md`.
