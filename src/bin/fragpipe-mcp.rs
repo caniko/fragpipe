@@ -162,6 +162,7 @@ impl FragpipeMcp {
                 .unwrap_or_else(|| self.default_workdir.clone()),
             cluster,
             vm_count,
+            remote_host: common.remote_host.clone(),
         }
     }
 
@@ -179,11 +180,25 @@ impl FragpipeMcp {
         full_args.push(ctx.vm_count.to_string());
         full_args.extend(subcommand_args.iter().cloned());
 
-        let mut cmd = Command::new(&ctx.cluster_ctl_bin);
-        cmd.args(&full_args)
-            .current_dir(&ctx.workdir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        // When remote_host is set, SSH to the remote host and run cluster-ctl
+        // there instead of locally. Uses SSH agent forwarding for auth.
+        let mut cmd = if let Some(host) = &common.remote_host {
+            let mut ssh_cmd = Command::new("ssh");
+            ssh_cmd.arg(host);
+            ssh_cmd.arg(&ctx.cluster_ctl_bin);
+            ssh_cmd.args(&full_args);
+            ssh_cmd.current_dir(&ctx.workdir)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            ssh_cmd
+        } else {
+            let mut local_cmd = Command::new(&ctx.cluster_ctl_bin);
+            local_cmd.args(&full_args)
+                .current_dir(&ctx.workdir)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            local_cmd
+        };
 
         #[cfg(unix)]
         {
@@ -379,6 +394,23 @@ struct RunInput {
     /// WebRTC listen port override.
     #[serde(default)]
     webrtc_port: Option<u16>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct DirectRunInput {
+    #[serde(flatten)]
+    common: CommonInput,
+    /// Remote peer name from the config ([[remote]] section).
+    remote: String,
+    /// Transport protocol: "lan" (default) or "steam".
+    #[serde(default)]
+    transport: Option<String>,
+    /// UDP listener port (LAN transport only).
+    #[serde(default)]
+    port: Option<u16>,
+    /// Local IP for the joiner to connect to (LAN transport only).
+    #[serde(default)]
+    local_ip: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -590,6 +622,11 @@ struct ClusterCommonInput {
     /// derived from the per-run `timeout * max_runs` budget unless explicitly set.
     #[serde(default)]
     mcp_timeout: Option<u64>,
+    /// SSH host to run the cluster-ctl command on remotely.
+    /// When set, the tool SSHs to this host and runs cluster-ctl there,
+    /// instead of running it locally. Uses SSH agent forwarding for auth.
+    #[serde(default)]
+    remote_host: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -723,6 +760,7 @@ struct ClusterContext {
     workdir: PathBuf,
     cluster: String,
     vm_count: u8,
+    remote_host: Option<String>,
 }
 
 fn default_vm_count(cluster: &str) -> u8 {
@@ -851,12 +889,17 @@ fn build_cluster_test_input_args(
 }
 
 fn cluster_command_header(ctx: &ClusterContext, args: &[String]) -> String {
+    let host_info = match &ctx.remote_host {
+        Some(host) => format!(" (via ssh {host})"),
+        None => String::new(),
+    };
     format!(
-        "=== fragpipe-mcp (cluster proxy) ===\nworkdir: {}\ncommand: {} --cluster {} --vm-count {} {}\n\n",
+        "=== fragpipe-mcp (cluster proxy) ===\nworkdir: {}\ncommand: {} --cluster {} --vm-count {}{} {}\n\n",
         ctx.workdir.display(),
         ctx.cluster_ctl_bin,
         ctx.cluster,
         ctx.vm_count,
+        host_info,
         args.join(" "),
     )
 }
@@ -921,6 +964,36 @@ impl FragpipeMcp {
         Parameters(input): Parameters<RunInput>,
     ) -> Result<CallToolResult, ErrorData> {
         self.run_single("webrtc-1v1", input, 300)
+    }
+
+    #[tool(
+        description = "Run bare-metal host2host 1v1 via SSH (no VMs). Supports LAN (UDP/libp2p) and Steam (Steamworks P2P) transport."
+    )]
+    fn repeat_direct_1v1(
+        &self,
+        Parameters(input): Parameters<DirectRunInput>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let max_runs = input.common.max_runs.unwrap_or(1).min(50);
+        let timeout = input.common.timeout.unwrap_or(300);
+        let mut args = vec!["direct-1v1".to_string()];
+        push_common_fragpipe_args(&mut args, &input.common, max_runs, timeout);
+        args.push("--remote".into());
+        args.push(input.remote.clone());
+        if let Some(transport) = &input.transport {
+            args.push("--transport".into());
+            args.push(transport.clone());
+        }
+        if let Some(port) = input.port {
+            args.push("--port".into());
+            args.push(port.to_string());
+        }
+        if let Some(local_ip) = &input.local_ip {
+            args.push("--local-ip".into());
+            args.push(local_ip.clone());
+        }
+        let total_timeout = timeout.saturating_mul(max_runs as u64).saturating_add(120);
+        let (output, _) = self.run_fragpipe(&input.common, args, total_timeout)?;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
     #[tool(description = "Run forced-relay internet 1v1 through fragpipe.")]
@@ -1084,6 +1157,7 @@ impl FragpipeMcp {
                     cluster: Some(cell.cluster.clone()),
                     vm_count: cell.vm_count,
                     mcp_timeout: None,
+                    remote_host: None,
                 };
 
                 let args = build_cluster_cell_test_args(cell, max_runs, cell_timeout);
