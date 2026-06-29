@@ -187,13 +187,15 @@ impl FragpipeMcp {
             ssh_cmd.arg(host);
             ssh_cmd.arg(&ctx.cluster_ctl_bin);
             ssh_cmd.args(&full_args);
-            ssh_cmd.current_dir(&ctx.workdir)
+            ssh_cmd
+                .current_dir(&ctx.workdir)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
             ssh_cmd
         } else {
             let mut local_cmd = Command::new(&ctx.cluster_ctl_bin);
-            local_cmd.args(&full_args)
+            local_cmd
+                .args(&full_args)
                 .current_dir(&ctx.workdir)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
@@ -505,6 +507,23 @@ struct CrossPlatformInput {
     /// Override for the `cluster-ctl` binary used by cluster cells.
     #[serde(default)]
     cluster_ctl_bin: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct ShipInput {
+    #[serde(flatten)]
+    common: CommonInput,
+    /// Remote peer name from the config ([[remote]] section).
+    remote: String,
+    /// Skip SSH deploy (binary/assets rsync).
+    #[serde(default)]
+    no_deploy: Option<bool>,
+    /// Stop the old process and launch a new instance after deploy.
+    #[serde(default)]
+    restart: Option<bool>,
+    /// Override launch args for --restart (otherwise uses remote.join_args).
+    #[serde(default)]
+    launch_args: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
@@ -1043,6 +1062,40 @@ impl FragpipeMcp {
         }
         let (output, _) =
             self.run_fragpipe(&input.common, args, input.common.timeout.unwrap_or(120))?;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        description = "Build and deploy the game binary + assets to a remote peer. Runs `fragpipe ship` with optional restart."
+    )]
+    fn ship(&self, Parameters(input): Parameters<ShipInput>) -> Result<CallToolResult, ErrorData> {
+        let mut args = vec!["ship".to_string()];
+        if let Some(config) = &input.common.config {
+            args.push("--config".into());
+            args.push(config.clone());
+        }
+        args.push("--remote".into());
+        args.push(input.remote);
+        if input.common.no_build.unwrap_or(false) {
+            args.push("--no-build".into());
+        }
+        if input.no_deploy.unwrap_or(false) {
+            args.push("--no-deploy".into());
+        }
+        if input.restart.unwrap_or(false) {
+            args.push("--restart".into());
+        }
+        if let Some(launch_args) = &input.launch_args {
+            for a in launch_args {
+                args.push("--launch-args".into());
+                args.push(a.clone());
+            }
+        }
+        if input.common.dry_run.unwrap_or(false) {
+            args.push("--dry-run".into());
+        }
+        let timeout = input.common.timeout.unwrap_or(600);
+        let (output, _) = self.run_fragpipe(&input.common, args, timeout)?;
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 

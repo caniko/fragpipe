@@ -821,6 +821,51 @@ pub fn run_android_ui(options: AndroidUiRunOptions) -> Result<()> {
     }
 }
 
+// =============================================================================
+// SHIP (standalone build + deploy)
+// =============================================================================
+
+pub struct ShipOptions {
+    pub config_path: PathBuf,
+    pub no_build: bool,
+    pub no_deploy: bool,
+    pub remote: String,
+    pub restart: bool,
+    pub launch_args: Option<Vec<String>>,
+    pub dry_run: bool,
+}
+
+pub fn run_ship(options: ShipOptions) -> Result<()> {
+    let config = load_config(&options.config_path)?;
+    println!("Fragpipe project: {}", config.game.name);
+    let remote = select_remote(&config, &options.remote)?;
+
+    if !options.no_build {
+        println!("==> Building...");
+        run_build(&config, options.dry_run)?;
+    }
+
+    if !options.no_deploy {
+        println!("==> Deploying to {} ({})...", remote.name, remote.host);
+        ssh::deploy(&config, remote, options.dry_run)?;
+    }
+
+    if options.restart {
+        println!("==> Restarting on {}...", remote.name);
+        ssh::stop_remote(&config, remote, options.dry_run)?;
+        let args = options
+            .launch_args
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| remote.join_args.clone());
+        ssh::launch_remote(&config, remote, &args, options.dry_run)?;
+        println!("==> {} restarted successfully", remote.name);
+    }
+
+    println!("==> ship complete");
+    Ok(())
+}
+
 pub fn run_android_doctor(options: AndroidDoctorOptions) -> Result<()> {
     let config = load_config(&options.config_path)?;
     let mut android_cfg = config
@@ -1216,10 +1261,7 @@ mod tests {
     #[test]
     fn first_marker_line_finds_matching_line() {
         let output = "line1\nPASS: all good\nline3\n";
-        assert_eq!(
-            first_marker_line(output, "PASS:"),
-            Some("PASS: all good")
-        );
+        assert_eq!(first_marker_line(output, "PASS:"), Some("PASS: all good"));
     }
 
     #[test]
@@ -1231,10 +1273,7 @@ mod tests {
     #[test]
     fn first_marker_line_finds_last_match() {
         let output = "PASS: first\nsome log\nPASS: second";
-        assert_eq!(
-            first_marker_line(output, "PASS:"),
-            Some("PASS: first")
-        );
+        assert_eq!(first_marker_line(output, "PASS:"), Some("PASS: first"));
     }
 
     #[test]
@@ -1352,10 +1391,7 @@ mod tests {
         assert_eq!(ui_cfg.package_name, "com.ui.pkg");
         assert_eq!(ui_cfg.activity_name, "UiActivity");
         assert_eq!(ui_cfg.log_tag, "UI_TAG");
-        assert_eq!(
-            ui_cfg.apk_build_command,
-            Some("build-ui".into())
-        );
+        assert_eq!(ui_cfg.apk_build_command, Some("build-ui".into()));
     }
 
     #[test]
@@ -1394,6 +1430,39 @@ mod tests {
         assert!(json.contains(r#""status":"Pass""#));
         assert!(json.contains(r#""label":"test-label""#));
         assert!(json.contains(r#""duration_secs":42"#));
+    }
+
+    #[test]
+    fn run_ship_dry_run_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("ship.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+            [game]
+            binary = "game"
+            build_command = "echo build"
+            [[remote]]
+            name = "test-peer"
+            host = "test-host"
+            remote_dir = "/remote"
+            "#,
+        )
+        .unwrap();
+
+        // Use the real runner via dispatch (dry_run should not error)
+        let options = crate::runner::ShipOptions {
+            config_path,
+            remote: "test-peer".into(),
+            no_build: false,
+            no_deploy: false,
+            restart: true,
+            launch_args: Some(vec!["--join".into(), "addr".into()]),
+            dry_run: true,
+        };
+        // run_ship should succeed in dry-run mode
+        crate::runner::run_ship(options).unwrap();
+        drop(dir);
     }
 
     fn create_test_android_cfg() -> AndroidConfig {

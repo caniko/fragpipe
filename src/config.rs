@@ -423,7 +423,10 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(config.webrtc.local_ip, "127.0.0.1".parse::<IpAddr>().unwrap());
+        assert_eq!(
+            config.webrtc.local_ip,
+            "127.0.0.1".parse::<IpAddr>().unwrap()
+        );
         assert_eq!(config.webrtc.port, 27200);
         assert_eq!(config.webrtc.timeout_secs, 300);
         assert_eq!(config.webrtc.max_runs, 1);
@@ -433,7 +436,12 @@ mod tests {
         assert_eq!(config.internet.pass_marker, "GAME OVER");
         assert_eq!(config.process.pass_markers, vec!["GAME OVER".to_string()]);
         assert!(config.process.fatal_markers.contains(&"panic".to_string()));
-        assert!(config.process.fatal_markers.contains(&"[FATAL]".to_string()));
+        assert!(
+            config
+                .process
+                .fatal_markers
+                .contains(&"[FATAL]".to_string())
+        );
     }
 
     #[test]
@@ -446,7 +454,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.game.name, "game");
-        assert_eq!(config.game.listener_log, PathBuf::from("fragpipe-listener.log"));
+        assert_eq!(
+            config.game.listener_log,
+            PathBuf::from("fragpipe-listener.log")
+        );
         assert_eq!(config.game.joiner_log, PathBuf::from("fragpipe-joiner.log"));
         assert!(config.game.build_command.is_none());
         assert!(config.game.env.is_empty());
@@ -663,7 +674,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.game.name, "test-game");
-        assert_eq!(config.webrtc.local_ip, "10.0.0.1".parse::<IpAddr>().unwrap());
+        assert_eq!(
+            config.webrtc.local_ip,
+            "10.0.0.1".parse::<IpAddr>().unwrap()
+        );
         assert_eq!(config.webrtc.port, 9090);
         assert_eq!(config.internet.timeout_secs, 100);
         assert_eq!(config.internet.max_runs, 2);

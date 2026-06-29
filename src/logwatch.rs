@@ -107,10 +107,7 @@ mod tests {
     #[test]
     fn classify_log_graceful_shutdown_exit_code_0_not_fatal() {
         let cfg = test_process_config();
-        assert_eq!(
-            classify_log(&cfg, "Graceful shutdown: exit_code=0"),
-            None
-        );
+        assert_eq!(classify_log(&cfg, "Graceful shutdown: exit_code=0"), None);
     }
 
     #[test]

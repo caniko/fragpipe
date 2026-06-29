@@ -15,8 +15,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use runner::{
     AndroidDoctorOptions, AndroidRunOptions, AndroidUiRunOptions, InternetRunOptions, OutputFormat,
-    WebRtcRunOptions, run_android_1v1, run_android_doctor, run_android_ui, run_internet_1v1,
-    run_webrtc_1v1,
+    ShipOptions, WebRtcRunOptions, run_android_1v1, run_android_doctor, run_android_ui,
+    run_internet_1v1, run_ship, run_webrtc_1v1,
 };
 
 #[derive(Debug, Parser)]
@@ -29,6 +29,9 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// Build and deploy the game binary + assets to a remote peer, with optional restart.
+    #[command(name = "ship")]
+    Ship(ShipArgs),
     /// Run a native WebRTC Direct 1v1 smoke test.
     #[command(name = "webrtc-1v1")]
     Webrtc1v1(WebRtc1v1Args),
@@ -44,6 +47,37 @@ enum Commands {
     /// Validate Android SDK/adb/APK/manifest prerequisites.
     #[command(name = "android-doctor")]
     AndroidDoctor(AndroidDoctorArgs),
+}
+
+#[derive(Debug, Parser)]
+struct ShipArgs {
+    /// Project config path.
+    #[arg(long, default_value = "fragpipe.toml")]
+    config: PathBuf,
+
+    /// Remote peer name from the config.
+    #[arg(long, required = true)]
+    remote: String,
+
+    /// Skip the configured build command.
+    #[arg(long)]
+    no_build: bool,
+
+    /// Skip binary/assets deployment.
+    #[arg(long)]
+    no_deploy: bool,
+
+    /// Stop the old process and launch a new instance after deploy.
+    #[arg(long)]
+    restart: bool,
+
+    /// Override launch args for --restart (otherwise uses remote.join_args).
+    #[arg(long, num_args = 1.., value_hint = clap::ValueHint::CommandWithArguments)]
+    launch_args: Option<Vec<String>>,
+
+    /// Print commands without building, SSHing or rsyncing.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -276,6 +310,15 @@ impl From<CliOutputFormat> for OutputFormat {
 
 pub fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Commands::Ship(args) => run_ship(ShipOptions {
+            config_path: args.config,
+            remote: args.remote,
+            no_build: args.no_build,
+            no_deploy: args.no_deploy,
+            restart: args.restart,
+            launch_args: args.launch_args,
+            dry_run: args.dry_run,
+        }),
         Commands::Webrtc1v1(args) => run_webrtc_1v1(WebRtcRunOptions {
             config_path: args.config,
             max_runs: args.max_runs,
@@ -489,13 +532,72 @@ mod tests {
         ])
         .unwrap();
         if let Commands::AndroidUi(args) = cli.command {
-            assert_eq!(
-                args.launch_config,
-                Some(r#"{"difficulty":"easy"}"#.into())
-            );
+            assert_eq!(args.launch_config, Some(r#"{"difficulty":"easy"}"#.into()));
             assert!(args.dry_run);
         } else {
             panic!("expected AndroidUi variant");
+        }
+    }
+
+    #[test]
+    fn parse_ship_subcommand() {
+        let cli = Cli::try_parse_from(["fragpipe", "ship", "--remote", "test-peer"]).unwrap();
+        assert!(matches!(cli.command, Commands::Ship(_)));
+    }
+
+    #[test]
+    fn ship_requires_remote() {
+        let result = Cli::try_parse_from(["fragpipe", "ship"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn ship_all_flags() {
+        let cli = Cli::try_parse_from([
+            "fragpipe",
+            "ship",
+            "--config",
+            "custom.toml",
+            "--remote",
+            "atlas",
+            "--no-build",
+            "--no-deploy",
+            "--restart",
+            "--launch-args",
+            "--headless",
+            "--auto-play",
+            "--dry-run",
+        ])
+        .unwrap();
+        if let Commands::Ship(args) = cli.command {
+            assert_eq!(args.config, PathBuf::from("custom.toml"));
+            assert_eq!(args.remote, "atlas");
+            assert!(args.no_build);
+            assert!(args.no_deploy);
+            assert!(args.restart);
+            assert_eq!(
+                args.launch_args,
+                Some(vec!["--headless".into(), "--auto-play".into()])
+            );
+            assert!(args.dry_run);
+        } else {
+            panic!("expected Ship variant");
+        }
+    }
+
+    #[test]
+    fn ship_default_values() {
+        let cli = Cli::try_parse_from(["fragpipe", "ship", "--remote", "nomad"]).unwrap();
+        if let Commands::Ship(args) = cli.command {
+            assert_eq!(args.config, PathBuf::from("fragpipe.toml"));
+            assert_eq!(args.remote, "nomad");
+            assert!(!args.no_build);
+            assert!(!args.no_deploy);
+            assert!(!args.restart);
+            assert!(args.launch_args.is_none());
+            assert!(!args.dry_run);
+        } else {
+            panic!("expected Ship variant");
         }
     }
 

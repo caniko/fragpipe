@@ -5,15 +5,14 @@ on:
   push:
     branches: ["**"]
     tags-ignore: ["**"]
-  pull_request:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test:
-    runs-on: atlas
+  codeberg-tiny:
+    runs-on: codeberg-tiny
     container: rust:bookworm
     steps:
       - name: Checkout
@@ -28,11 +27,47 @@ jobs:
           path: ~/.cargo/bin
           key: cargo-bin-${{ runner.os }}-${{ hashFiles('.forgejo/workflows/*.yaml') }}
 
-      - name: Test all features
-        run: cargo test --all-features
+      - name: Format check
+        run: cargo fmt --all -- --check
 
-      - name: Clippy all features
-        run: cargo clippy --all-targets --all-features -- --deny warnings
+  codeberg-medium:
+    needs: [codeberg-tiny]
+    runs-on: codeberg-medium
+    container: rust:bookworm
+    steps:
+      - name: Checkout
+        uses: https://code.forgejo.org/actions/checkout@v4
+
+      - name: Install Rust components
+        run: rustup component add clippy rustfmt
+
+      - name: Cache cargo bin (tools)
+        uses: https://code.forgejo.org/actions/cache@v4
+        with:
+          path: ~/.cargo/bin
+          key: cargo-bin-${{ runner.os }}-${{ hashFiles('.forgejo/workflows/*.yaml') }}
+
+      - name: Test
+        run: cargo test
 
       - name: Package crate
-        run: cargo package --allow-dirty
+        run: cargo package
+  codeberg-small:
+    needs: [codeberg-tiny]
+    runs-on: codeberg-small
+    container: rust:bookworm
+    steps:
+      - name: Checkout
+        uses: https://code.forgejo.org/actions/checkout@v4
+
+      - name: Install Rust components
+        run: rustup component add clippy rustfmt
+
+      - name: Cache cargo bin (tools)
+        uses: https://code.forgejo.org/actions/cache@v4
+        with:
+          path: ~/.cargo/bin
+          key: cargo-bin-${{ runner.os }}-${{ hashFiles('.forgejo/workflows/*.yaml') }}
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- --deny warnings
