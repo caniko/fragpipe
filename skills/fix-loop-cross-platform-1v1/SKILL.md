@@ -16,3 +16,7 @@ Required parameters:
 - `timeout`: default per-run timeout, usually `300`.
 
 Run fail-fast first. If only one cell fails, switch to the focused WebRTC, Android WebRTC, or Android UI skill and fix that path before returning to the matrix.
+
+When the Android UI cell captures a screenshot and the remaining question is
+semantic visual quality rather than launch/logcat/dimension correctness, use
+the global `visual-rubric` skill for screenshot rubric evaluation.
