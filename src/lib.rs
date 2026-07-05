@@ -72,7 +72,7 @@ struct ShipArgs {
     restart: bool,
 
     /// Override launch args for --restart (otherwise uses remote.join_args).
-    #[arg(long, num_args = 1.., value_hint = clap::ValueHint::CommandWithArguments)]
+    #[arg(long, num_args = 1.., allow_hyphen_values = true)]
     launch_args: Option<Vec<String>>,
 
     /// Print commands without building, SSHing or rsyncing.
@@ -563,10 +563,10 @@ mod tests {
             "--no-build",
             "--no-deploy",
             "--restart",
+            "--dry-run",
             "--launch-args",
             "--headless",
             "--auto-play",
-            "--dry-run",
         ])
         .unwrap();
         if let Commands::Ship(args) = cli.command {
