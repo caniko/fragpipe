@@ -33,22 +33,24 @@ fragpipe android-1v1 --config examples/chessbender.toml --max-runs 1
 ```
 
 The Android config controls whether fragpipe boots an emulator or uses a
-physical device selected by `adb_serial`. The APK build command is project
-specific; fragpipe only runs it, installs the APK, pushes the rendezvous file,
-captures logcat, and records per-run artifacts.
+physical device selected by `adb_serial`. Physical-device runs also require a
+desktop `local_ip` that the device can reach. Emulator and device APK build
+commands may differ. Fragpipe installs and clears app data before every run,
+pushes the rendezvous file, captures logcat, and records per-run artifacts.
 
 ## Android UI
 
-`android-ui` launches the configured full app, waits briefly for startup,
-asserts that the Android display is landscape, captures a screenshot, and
-stores logcat plus a JSON report:
+`android-ui` launches the configured full app, waits for its exact configured
+package/activity component to become resumed foreground, and requires a decoded, non-uniform landscape
+screenshot. It retries readiness probes until the configured timeout, then
+stores the screenshot, logcat, and a JSON report:
 
 ```bash
 fragpipe android-ui --config examples/chessbender.toml --max-runs 1
 ```
 
-Use `android-doctor` to validate SDK, adb, APK, target, package, and activity
-configuration before running a loop:
+Use `android-doctor` to validate SDK build-tools/aapt2, adb/device or AVD readiness, APK
+existence, and the APK's actual package/activity metadata before running a loop:
 
 ```bash
 fragpipe android-doctor --config examples/chessbender.toml

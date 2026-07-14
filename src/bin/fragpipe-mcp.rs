@@ -118,7 +118,7 @@ impl FragpipeMcp {
         input: RunInput,
         default_timeout: u64,
     ) -> Result<CallToolResult, ErrorData> {
-        let max_runs = input.common.max_runs.unwrap_or(1).min(50);
+        let max_runs = capped_max_runs(input.common.max_runs);
         let timeout = input.common.timeout.unwrap_or(default_timeout);
         let mut args = vec![command.to_string()];
         push_common_fragpipe_args(&mut args, &input.common, max_runs, timeout);
@@ -137,12 +137,12 @@ impl FragpipeMcp {
             args.push("--webrtc-port".into());
             args.push(port.to_string());
         }
-        let (output, _) = self.run_fragpipe(
+        let (output, ok) = self.run_fragpipe(
             &input.common,
             args,
             timeout.saturating_mul(max_runs as u64).saturating_add(120),
         )?;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(tool_result(output, ok))
     }
 
     fn cluster_context(&self, common: &ClusterCommonInput) -> ClusterContext {
@@ -268,24 +268,9 @@ impl FragpipeMcp {
         input: AndroidRunInput,
         default_timeout: u64,
     ) -> Result<(String, bool), ErrorData> {
-        let max_runs = input.common.max_runs.unwrap_or(1).min(50);
+        let max_runs = capped_max_runs(input.common.max_runs);
         let timeout = input.common.timeout.unwrap_or(default_timeout);
-        let mut args = vec![command.to_string()];
-        push_common_fragpipe_args(&mut args, &input.common, max_runs, timeout);
-        if input.no_install.unwrap_or(false) {
-            args.push("--no-install".into());
-        }
-        if input.device.unwrap_or(false) {
-            args.push("--device".into());
-        }
-        if let Some(serial) = input.adb_serial {
-            args.push("--adb-serial".into());
-            args.push(serial);
-        }
-        if let Some(config) = input.launch_config {
-            args.push("--launch-config".into());
-            args.push(config);
-        }
+        let args = build_android_args(command, &input, max_runs, timeout);
         self.run_fragpipe(
             &input.common,
             args,
@@ -298,7 +283,7 @@ impl FragpipeMcp {
         input: InternetRunInput,
         default_timeout: u64,
     ) -> Result<CallToolResult, ErrorData> {
-        let max_runs = input.common.max_runs.unwrap_or(1).min(50);
+        let max_runs = capped_max_runs(input.common.max_runs);
         let timeout = input.common.timeout.unwrap_or(default_timeout);
         let mut args = vec!["internet-1v1".to_string()];
         if let Some(config) = &input.common.config {
@@ -343,13 +328,48 @@ impl FragpipeMcp {
         if input.common.dry_run.unwrap_or(false) {
             args.push("--dry-run".into());
         }
-        let (output, _) = self.run_fragpipe(
+        let (output, ok) = self.run_fragpipe(
             &input.common,
             args,
             timeout.saturating_mul(max_runs as u64).saturating_add(120),
         )?;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(tool_result(output, ok))
     }
+}
+
+fn build_android_args(
+    command: &str,
+    input: &AndroidRunInput,
+    max_runs: u32,
+    timeout: u64,
+) -> Vec<String> {
+    let mut args = vec![command.to_string()];
+    push_common_fragpipe_args(&mut args, &input.common, max_runs, timeout);
+    if input.no_install.unwrap_or(false) {
+        args.push("--no-install".into());
+    }
+    if input.device.unwrap_or(false) {
+        args.push("--device".into());
+    }
+    if let Some(serial) = &input.adb_serial {
+        args.push("--adb-serial".into());
+        args.push(serial.clone());
+    }
+    if let Some(config) = &input.launch_config {
+        args.push("--launch-config".into());
+        args.push(config.clone());
+    }
+    if command == "android-1v1" {
+        if let Some(local_ip) = &input.local_ip {
+            args.push("--local-ip".into());
+            args.push(local_ip.clone());
+        }
+        if let Some(port) = input.webrtc_port {
+            args.push("--webrtc-port".into());
+            args.push(port.to_string());
+        }
+    }
+    args
 }
 
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema, Default)]
@@ -456,6 +476,12 @@ struct AndroidRunInput {
     /// JSON launch config pushed to the Android target before activity start.
     #[serde(default)]
     launch_config: Option<String>,
+    /// Desktop address advertised to the Android joining peer.
+    #[serde(default)]
+    local_ip: Option<String>,
+    /// WebRTC listen port override for Android 1v1.
+    #[serde(default)]
+    webrtc_port: Option<u16>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -468,6 +494,9 @@ struct AndroidDoctorInput {
     /// adb serial for a physical device or specific emulator.
     #[serde(default)]
     adb_serial: Option<String>,
+    /// Reachable desktop address used to validate physical-device mode.
+    #[serde(default)]
+    local_ip: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -495,6 +524,15 @@ struct CrossPlatformInput {
     /// adb serial for Android cells.
     #[serde(default)]
     adb_serial: Option<String>,
+    /// Desktop address advertised specifically to Android peers.
+    #[serde(default)]
+    android_local_ip: Option<String>,
+    /// WebRTC listen port override for the Android 1v1 cell.
+    #[serde(default)]
+    android_webrtc_port: Option<u16>,
+    /// JSON launch config pushed before each Android cell starts its activity.
+    #[serde(default)]
+    android_launch_config: Option<String>,
     /// If true, passes `--no-install` to Android cells.
     #[serde(default)]
     no_install: Option<bool>,
@@ -948,6 +986,10 @@ fn push_common_fragpipe_args(
     }
 }
 
+fn capped_max_runs(max_runs: Option<u32>) -> u32 {
+    max_runs.unwrap_or(1).min(50)
+}
+
 fn command_header(ctx: &CommandContext, args: &[String]) -> String {
     format!(
         "=== fragpipe-mcp ===\nworkdir: {}\ncommand: {} {}\n\n",
@@ -955,6 +997,15 @@ fn command_header(ctx: &CommandContext, args: &[String]) -> String {
         ctx.fragpipe_bin,
         args.join(" ")
     )
+}
+
+fn tool_result(output: String, ok: bool) -> CallToolResult {
+    let content = vec![Content::text(output)];
+    if ok {
+        CallToolResult::success(content)
+    } else {
+        CallToolResult::error(content)
+    }
 }
 
 fn terminate_process_group(pgid: u32) {
@@ -992,7 +1043,7 @@ impl FragpipeMcp {
         &self,
         Parameters(input): Parameters<DirectRunInput>,
     ) -> Result<CallToolResult, ErrorData> {
-        let max_runs = input.common.max_runs.unwrap_or(1).min(50);
+        let max_runs = capped_max_runs(input.common.max_runs);
         let timeout = input.common.timeout.unwrap_or(300);
         let mut args = vec!["direct-1v1".to_string()];
         push_common_fragpipe_args(&mut args, &input.common, max_runs, timeout);
@@ -1011,8 +1062,8 @@ impl FragpipeMcp {
             args.push(local_ip.clone());
         }
         let total_timeout = timeout.saturating_mul(max_runs as u64).saturating_add(120);
-        let (output, _) = self.run_fragpipe(&input.common, args, total_timeout)?;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        let (output, ok) = self.run_fragpipe(&input.common, args, total_timeout)?;
+        Ok(tool_result(output, ok))
     }
 
     #[tool(description = "Run forced-relay internet 1v1 through fragpipe.")]
@@ -1028,8 +1079,8 @@ impl FragpipeMcp {
         &self,
         Parameters(input): Parameters<AndroidRunInput>,
     ) -> Result<CallToolResult, ErrorData> {
-        let (output, _) = self.run_android("android-1v1", input, 300)?;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        let (output, ok) = self.run_android("android-1v1", input, 300)?;
+        Ok(tool_result(output, ok))
     }
 
     #[tool(
@@ -1039,8 +1090,8 @@ impl FragpipeMcp {
         &self,
         Parameters(input): Parameters<AndroidRunInput>,
     ) -> Result<CallToolResult, ErrorData> {
-        let (output, _) = self.run_android("android-ui", input, 120)?;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        let (output, ok) = self.run_android("android-ui", input, 120)?;
+        Ok(tool_result(output, ok))
     }
 
     #[tool(description = "Run fragpipe android-doctor against an Android config.")]
@@ -1060,9 +1111,16 @@ impl FragpipeMcp {
             args.push("--adb-serial".into());
             args.push(serial);
         }
-        let (output, _) =
+        if let Some(local_ip) = input.local_ip {
+            args.push("--local-ip".into());
+            args.push(local_ip);
+        }
+        if input.common.dry_run.unwrap_or(false) {
+            args.push("--dry-run".into());
+        }
+        let (output, ok) =
             self.run_fragpipe(&input.common, args, input.common.timeout.unwrap_or(120))?;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(tool_result(output, ok))
     }
 
     #[tool(
@@ -1095,8 +1153,8 @@ impl FragpipeMcp {
             args.push("--dry-run".into());
         }
         let timeout = input.common.timeout.unwrap_or(600);
-        let (output, _) = self.run_fragpipe(&input.common, args, timeout)?;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        let (output, ok) = self.run_fragpipe(&input.common, args, timeout)?;
+        Ok(tool_result(output, ok))
     }
 
     #[tool(
@@ -1106,7 +1164,7 @@ impl FragpipeMcp {
         &self,
         Parameters(input): Parameters<CrossPlatformInput>,
     ) -> Result<CallToolResult, ErrorData> {
-        let max_runs = input.common.max_runs.unwrap_or(1).min(50);
+        let max_runs = capped_max_runs(input.common.max_runs);
         let timeout = input.common.timeout.unwrap_or(300);
         let stop_on_failure = input.common.stop_on_failure.unwrap_or(true);
         let mut output = String::new();
@@ -1124,7 +1182,8 @@ impl FragpipeMcp {
             common.timeout = Some(timeout);
             let mut args = vec!["webrtc-1v1".to_string()];
             push_common_fragpipe_args(&mut args, &common, max_runs, timeout);
-            let (text, ok) = self.run_fragpipe(&common, args, timeout * max_runs as u64 + 120)?;
+            let wall_timeout = timeout.saturating_mul(max_runs as u64).saturating_add(120);
+            let (text, ok) = self.run_fragpipe(&common, args, wall_timeout)?;
             output.push_str("=== MATRIX CELL: native-webrtc ===\n");
             output.push_str(&text);
             if !ok {
@@ -1133,7 +1192,7 @@ impl FragpipeMcp {
                     output.push_str(&format!(
                         "\n=== CROSS-PLATFORM SUMMARY ===\nfailed cells: {failed}\n"
                     ));
-                    return Ok(CallToolResult::success(vec![Content::text(output)]));
+                    return Ok(tool_result(output, false));
                 }
             }
         }
@@ -1170,7 +1229,9 @@ impl FragpipeMcp {
                 no_install: input.no_install,
                 device: input.device,
                 adb_serial: input.adb_serial.clone(),
-                launch_config: None,
+                launch_config: input.android_launch_config.clone(),
+                local_ip: input.android_local_ip.clone(),
+                webrtc_port: input.android_webrtc_port,
             };
             let (text, ok) = self.run_android(command, android_input, timeout_default)?;
             output.push_str(&format!("=== MATRIX CELL: {label} ===\n"));
@@ -1233,7 +1294,7 @@ impl FragpipeMcp {
         output.push_str(&format!(
             "\n=== CROSS-PLATFORM SUMMARY ===\nfailed cells: {failed}\n"
         ));
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(tool_result(output, failed == 0))
     }
 
     // ── Cluster proxy tools (delegate to `cluster-ctl`) ─────────────────────
@@ -1246,8 +1307,8 @@ impl FragpipeMcp {
         Parameters(input): Parameters<ClusterStatusInput>,
     ) -> Result<CallToolResult, ErrorData> {
         let timeout = input.common.mcp_timeout.unwrap_or(60);
-        let (output, _) = self.run_cluster_ctl(&input.common, vec!["status".into()], timeout)?;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        let (output, ok) = self.run_cluster_ctl(&input.common, vec!["status".into()], timeout)?;
+        Ok(tool_result(output, ok))
     }
 
     #[tool(
@@ -1274,8 +1335,8 @@ impl FragpipeMcp {
             args.push("--pattern".into());
             args.push(p.clone());
         }
-        let (output, _) = self.run_cluster_ctl(&input.common, args, timeout)?;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        let (output, ok) = self.run_cluster_ctl(&input.common, args, timeout)?;
+        Ok(tool_result(output, ok))
     }
 
     #[tool(
@@ -1293,8 +1354,8 @@ impl FragpipeMcp {
         if input.verify.unwrap_or(false) {
             args.push("--verify".into());
         }
-        let (output, _) = self.run_cluster_ctl(&input.common, args, timeout)?;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        let (output, ok) = self.run_cluster_ctl(&input.common, args, timeout)?;
+        Ok(tool_result(output, ok))
     }
 
     #[tool(
@@ -1309,8 +1370,8 @@ impl FragpipeMcp {
         if input.kill_steam.unwrap_or(false) {
             args.push("--kill-steam".into());
         }
-        let (output, _) = self.run_cluster_ctl(&input.common, args, timeout)?;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        let (output, ok) = self.run_cluster_ctl(&input.common, args, timeout)?;
+        Ok(tool_result(output, ok))
     }
 
     #[tool(
@@ -1321,7 +1382,7 @@ impl FragpipeMcp {
         Parameters(input): Parameters<ClusterTestInput>,
     ) -> Result<CallToolResult, ErrorData> {
         let per_run_timeout = input.timeout.unwrap_or(300);
-        let max_runs = input.max_runs.unwrap_or(1).min(50);
+        let max_runs = capped_max_runs(input.max_runs);
         // Wall-clock budget for the whole session: explicit override, else derived from
         // `per_run_timeout * max_runs` plus a buffer for deploy and per-run overhead.
         let wall_timeout = input.common.mcp_timeout.unwrap_or_else(|| {
@@ -1332,8 +1393,8 @@ impl FragpipeMcp {
 
         let args = build_cluster_test_input_args(&input, max_runs, per_run_timeout);
 
-        let (output, _) = self.run_cluster_ctl(&input.common, args, wall_timeout)?;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        let (output, ok) = self.run_cluster_ctl(&input.common, args, wall_timeout)?;
+        Ok(tool_result(output, ok))
     }
 
     #[tool(
@@ -1349,8 +1410,8 @@ impl FragpipeMcp {
             args.push("--last".into());
             args.push(n.to_string());
         }
-        let (output, _) = self.run_cluster_ctl(&input.common, args, timeout)?;
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        let (output, ok) = self.run_cluster_ctl(&input.common, args, timeout)?;
+        Ok(tool_result(output, ok))
     }
 
     #[tool(
@@ -1365,9 +1426,9 @@ impl FragpipeMcp {
         let timeout_secs = input.timeout.unwrap_or(300);
         let workdir_override = input.workdir.clone();
         let extra_args = input.args.as_deref().unwrap_or(&[]).to_vec();
-        let (text, _) =
+        let (text, ok) =
             self.run_nix_app_inner(flake, target, &workdir_override, timeout_secs, &extra_args)?;
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        Ok(tool_result(text, ok))
     }
 }
 
@@ -1505,6 +1566,27 @@ async fn main() -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
+    fn android_input() -> AndroidRunInput {
+        AndroidRunInput {
+            common: CommonInput {
+                fragpipe_bin: None,
+                workdir: None,
+                config: Some("android.toml".into()),
+                max_runs: Some(3),
+                timeout: Some(45),
+                stop_on_failure: Some(false),
+                no_build: Some(true),
+                dry_run: Some(true),
+            },
+            no_install: Some(true),
+            device: Some(true),
+            adb_serial: Some("physical-device".into()),
+            launch_config: Some("launch.json".into()),
+            local_ip: Some("192.0.2.10".into()),
+            webrtc_port: Some(9020),
+        }
+    }
+
     fn has_split_flag_value(args: &[String], flag: &str, value: &str) -> bool {
         args.windows(2)
             .any(|window| window[0] == flag && window[1] == value)
@@ -1564,5 +1646,70 @@ mod tests {
 
         assert!(args.contains(&"--host-args=".to_string()));
         assert!(args.contains(&"--vm-args=".to_string()));
+    }
+
+    #[test]
+    fn android_1v1_args_forward_every_android_override() {
+        let args = build_android_args("android-1v1", &android_input(), 3, 45);
+
+        assert!(has_split_flag_value(&args, "--config", "android.toml"));
+        assert!(has_split_flag_value(&args, "--max-runs", "3"));
+        assert!(has_split_flag_value(&args, "--timeout", "45"));
+        assert!(has_split_flag_value(
+            &args,
+            "--adb-serial",
+            "physical-device"
+        ));
+        assert!(has_split_flag_value(
+            &args,
+            "--launch-config",
+            "launch.json"
+        ));
+        assert!(has_split_flag_value(&args, "--local-ip", "192.0.2.10"));
+        assert!(has_split_flag_value(&args, "--webrtc-port", "9020"));
+        for flag in [
+            "--stop-on-failure=false",
+            "--no-build",
+            "--dry-run",
+            "--no-install",
+            "--device",
+        ] {
+            assert!(args.contains(&flag.to_string()), "missing {flag}: {args:?}");
+        }
+    }
+
+    #[test]
+    fn android_ui_args_do_not_forward_webrtc_only_overrides() {
+        let args = build_android_args("android-ui", &android_input(), 3, 45);
+
+        assert!(!args.contains(&"--local-ip".to_string()));
+        assert!(!args.contains(&"--webrtc-port".to_string()));
+    }
+
+    #[test]
+    fn tool_result_sets_protocol_error_and_preserves_output() {
+        let success = tool_result("all good".into(), true);
+        assert_eq!(success.is_error, Some(false));
+        assert!(
+            serde_json::to_string(&success)
+                .unwrap()
+                .contains("all good")
+        );
+
+        let failure = tool_result("full failure output".into(), false);
+        assert_eq!(failure.is_error, Some(true));
+        assert!(
+            serde_json::to_string(&failure)
+                .unwrap()
+                .contains("full failure output")
+        );
+    }
+
+    #[test]
+    fn mcp_max_runs_caps_large_values_without_hiding_invalid_zero() {
+        assert_eq!(capped_max_runs(None), 1);
+        assert_eq!(capped_max_runs(Some(0)), 0);
+        assert_eq!(capped_max_runs(Some(12)), 12);
+        assert_eq!(capped_max_runs(Some(100)), 50);
     }
 }

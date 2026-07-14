@@ -162,11 +162,20 @@ pub struct AndroidConfig {
     /// deterministic physical-device fix loops.
     #[serde(default)]
     pub adb_serial: Option<String>,
+    /// Desktop address advertised to the Android peer. This is separate from
+    /// `[webrtc].local_ip` because an emulator commonly needs `10.0.2.2`, while
+    /// native peers commonly use loopback or a LAN address.
+    #[serde(default)]
+    pub local_ip: Option<IpAddr>,
     /// Path to the APK to install on the Android target.
     pub apk_path: PathBuf,
     /// Optional command to build/stage the configured APK before install.
     #[serde(default)]
     pub apk_build_command: Option<String>,
+    /// Optional physical-device build override. When absent, the generic APK
+    /// build command is used for backwards compatibility.
+    #[serde(default)]
+    pub device_apk_build_command: Option<String>,
     /// Optional full-app APK path used by `android-ui`.
     #[serde(default)]
     pub ui_apk_path: Option<PathBuf>,
@@ -182,6 +191,9 @@ pub struct AndroidConfig {
     /// Optional command to build/stage the full-app APK before `android-ui`.
     #[serde(default)]
     pub ui_apk_build_command: Option<String>,
+    /// Optional physical-device build override for the full UI app.
+    #[serde(default)]
+    pub device_ui_apk_build_command: Option<String>,
     /// Application package name (e.g. `tartanoglu.chessbender.test_peer`).
     pub package_name: String,
     /// Fully-qualified activity name (e.g. `androidx.games.activity.GameActivity`).
@@ -203,6 +215,10 @@ pub struct AndroidConfig {
     /// Optional `adb` binary override (defaults to `$ANDROID_SDK_ROOT/platform-tools/adb`).
     #[serde(default)]
     pub adb_bin: Option<PathBuf>,
+    /// Optional `aapt2` binary override used by `android-doctor` to validate
+    /// package/activity metadata. Defaults to the newest SDK build-tools copy.
+    #[serde(default)]
+    pub aapt_bin: Option<PathBuf>,
     /// Extra args to pass to the emulator process (e.g. `["-no-window", "-no-audio"]`).
     #[serde(default = "default_android_emulator_args")]
     pub emulator_args: Vec<String>,
@@ -663,6 +679,12 @@ mod tests {
             package_name = "com.test"
             avd_name = "Test_AVD"
             adb_serial = "emulator-5554"
+            local_ip = "10.0.2.2"
+            apk_build_command = "build-emulator-apk"
+            device_apk_build_command = "build-device-apk"
+            ui_apk_build_command = "build-emulator-ui"
+            device_ui_apk_build_command = "build-device-ui"
+            aapt_bin = "/sdk/aapt2"
             boot_timeout_secs = 120
 
             [[remote]]
@@ -685,6 +707,16 @@ mod tests {
         let android = config.android.as_ref().unwrap();
         assert_eq!(android.avd_name, "Test_AVD");
         assert_eq!(android.adb_serial.as_deref(), Some("emulator-5554"));
+        assert_eq!(android.local_ip, Some("10.0.2.2".parse().unwrap()));
+        assert_eq!(
+            android.device_apk_build_command.as_deref(),
+            Some("build-device-apk")
+        );
+        assert_eq!(
+            android.device_ui_apk_build_command.as_deref(),
+            Some("build-device-ui")
+        );
+        assert_eq!(android.aapt_bin.as_deref(), Some(Path::new("/sdk/aapt2")));
         assert_eq!(android.boot_timeout_secs, 120);
         assert_eq!(config.remote.len(), 1);
         assert_eq!(config.remote[0].binary_name.as_deref(), Some("remote-bin"));

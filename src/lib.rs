@@ -27,6 +27,18 @@ pub struct Cli {
     command: Commands,
 }
 
+impl Cli {
+    /// Whether this command must run with the Android SDK/NDK toolchain in its
+    /// environment. Embedders use this before dispatch because `Commands` is an
+    /// implementation detail of fragpipe's CLI.
+    pub fn requires_android_environment(&self) -> bool {
+        matches!(
+            self.command,
+            Commands::Android1v1(_) | Commands::AndroidUi(_) | Commands::AndroidDoctor(_)
+        )
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Build and deploy the game binary + assets to a remote peer, with optional restart.
@@ -226,6 +238,10 @@ struct Android1v1Args {
     #[arg(long)]
     device: bool,
 
+    /// JSON launch config pushed to the Android device before starting.
+    #[arg(long)]
+    launch_config: Option<String>,
+
     /// Output format.
     #[arg(long, default_value = "text")]
     output_format: CliOutputFormat,
@@ -291,6 +307,14 @@ struct AndroidDoctorArgs {
     /// Use a physical device instead of requiring the configured AVD.
     #[arg(long)]
     device: bool,
+
+    /// Reachable desktop address that an Android peer would connect to.
+    #[arg(long)]
+    local_ip: Option<IpAddr>,
+
+    /// Validate config and print resolved tools without invoking adb/emulator.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -309,6 +333,7 @@ impl From<CliOutputFormat> for OutputFormat {
 }
 
 pub fn run(cli: Cli) -> Result<()> {
+    process::install_termination_handlers()?;
     match cli.command {
         Commands::Ship(args) => run_ship(ShipOptions {
             config_path: args.config,
@@ -358,7 +383,7 @@ pub fn run(cli: Cli) -> Result<()> {
             dry_run: args.dry_run,
             adb_serial: args.adb_serial,
             device: args.device,
-            launch_config: None,
+            launch_config: args.launch_config,
             output_format: args.output_format.into(),
         }),
         Commands::AndroidUi(args) => run_android_ui(AndroidUiRunOptions {
@@ -378,6 +403,8 @@ pub fn run(cli: Cli) -> Result<()> {
             config_path: args.config,
             adb_serial: args.adb_serial,
             device: args.device,
+            local_ip: args.local_ip,
+            dry_run: args.dry_run,
         }),
     }
 }
@@ -414,6 +441,33 @@ mod tests {
     fn parse_android_doctor_subcommand() {
         let cli = Cli::try_parse_from(["fragpipe", "android-doctor"]).unwrap();
         assert!(matches!(cli.command, Commands::AndroidDoctor(_)));
+    }
+
+    #[test]
+    fn only_android_commands_require_android_environment() {
+        for args in [
+            vec!["fragpipe", "android-1v1"],
+            vec!["fragpipe", "android-ui"],
+            vec!["fragpipe", "android-doctor"],
+        ] {
+            assert!(
+                Cli::try_parse_from(args)
+                    .unwrap()
+                    .requires_android_environment()
+            );
+        }
+
+        for args in [
+            vec!["fragpipe", "webrtc-1v1"],
+            vec!["fragpipe", "internet-1v1"],
+            vec!["fragpipe", "ship", "--remote", "peer"],
+        ] {
+            assert!(
+                !Cli::try_parse_from(args)
+                    .unwrap()
+                    .requires_android_environment()
+            );
+        }
     }
 
     #[test]
@@ -508,6 +562,8 @@ mod tests {
             "--adb-serial",
             "emulator-5554",
             "--no-install",
+            "--launch-config",
+            r#"{"difficulty":"hard"}"#,
             "--dry-run",
         ])
         .unwrap();
@@ -515,6 +571,7 @@ mod tests {
             assert!(args.device);
             assert_eq!(args.adb_serial, Some("emulator-5554".into()));
             assert!(args.no_install);
+            assert_eq!(args.launch_config, Some(r#"{"difficulty":"hard"}"#.into()));
             assert!(args.dry_run);
         } else {
             panic!("expected Android1v1 variant");
@@ -605,6 +662,28 @@ mod tests {
     fn android_doctor_requires_no_extra_args() {
         let cli = Cli::try_parse_from(["fragpipe", "android-doctor"]).unwrap();
         assert!(matches!(cli.command, Commands::AndroidDoctor(_)));
+    }
+
+    #[test]
+    fn android_doctor_accepts_target_and_dry_run_overrides() {
+        let cli = Cli::try_parse_from([
+            "fragpipe",
+            "android-doctor",
+            "--device",
+            "--adb-serial",
+            "physical-1",
+            "--local-ip",
+            "192.0.2.10",
+            "--dry-run",
+        ])
+        .unwrap();
+        let Commands::AndroidDoctor(args) = cli.command else {
+            panic!("expected AndroidDoctor variant");
+        };
+        assert!(args.device);
+        assert_eq!(args.adb_serial.as_deref(), Some("physical-1"));
+        assert_eq!(args.local_ip, Some("192.0.2.10".parse().unwrap()));
+        assert!(args.dry_run);
     }
 
     #[test]

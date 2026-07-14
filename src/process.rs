@@ -2,10 +2,58 @@ use std::fs::{self, File};
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 
+#[cfg(unix)]
+use std::sync::{
+    Arc, OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
+
 use anyhow::{Context, Result, bail};
 
 use crate::config::{Config, EnvPair, project_root};
 use crate::util::command_line;
+
+#[cfg(unix)]
+static TERMINATION_REQUESTED: OnceLock<Arc<AtomicBool>> = OnceLock::new();
+#[cfg(unix)]
+static TERMINATION_HANDLERS: OnceLock<std::result::Result<(), String>> = OnceLock::new();
+
+/// Install cancellation handlers for long-running fix-loop commands.
+///
+/// The handlers only set an atomic flag. Polling loops observe it and return
+/// normally so their existing local, remote, and Android teardown paths run.
+pub fn install_termination_handlers() -> Result<()> {
+    #[cfg(unix)]
+    {
+        let flag = TERMINATION_REQUESTED
+            .get_or_init(|| Arc::new(AtomicBool::new(false)))
+            .clone();
+        flag.store(false, Ordering::SeqCst);
+        let installation = TERMINATION_HANDLERS.get_or_init(|| {
+            signal_hook::flag::register(signal_hook::consts::SIGINT, flag.clone())
+                .map_err(|error| error.to_string())?;
+            signal_hook::flag::register(signal_hook::consts::SIGTERM, flag)
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        });
+        if let Err(error) = installation {
+            bail!("failed to install Fragpipe termination handlers: {error}");
+        }
+    }
+    Ok(())
+}
+
+/// Return an error after SIGINT/SIGTERM so callers unwind through teardown.
+pub fn check_interrupted() -> Result<()> {
+    #[cfg(unix)]
+    if TERMINATION_REQUESTED
+        .get()
+        .is_some_and(|flag| flag.load(Ordering::SeqCst))
+    {
+        bail!("fix-loop interrupted by termination signal");
+    }
+    Ok(())
+}
 
 pub fn run_build(config: &Config, dry_run: bool) -> Result<()> {
     let Some(command) = config.game.build_command.as_deref() else {
@@ -30,14 +78,10 @@ pub fn spawn_logged(
     config: &Config,
     args: &[String],
     log_path: &Path,
-    dry_run: bool,
     label: &str,
 ) -> Result<Child> {
     let command = command_line(&config.game.binary, args);
     println!("==> {label}: {command}");
-    if dry_run {
-        return spawn_noop_child();
-    }
 
     let log = File::create(log_path)
         .with_context(|| format!("failed to create log {}", log_path.display()))?;
@@ -94,21 +138,38 @@ fn shell_command(command: &str) -> Command {
     cmd
 }
 
-fn spawn_process_group(mut cmd: Command, context: &'static str) -> Result<Child> {
+pub(crate) fn spawn_process_group(mut cmd: Command, context: &'static str) -> Result<Child> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;
         cmd.process_group(0);
+
+        // Game and Android helper processes live in their own groups so timeout
+        // cleanup can terminate their full process trees. On Linux, also ask
+        // the kernel to terminate the group leader if Fragpipe itself exits
+        // abruptly (SIGINT/SIGTERM, MCP timeout, or parent crash). Otherwise an
+        // interrupted fix-loop leaves peers holding ports for the next run.
+        #[cfg(target_os = "linux")]
+        {
+            let parent_pid = std::process::id() as libc::pid_t;
+            // SAFETY: `pre_exec` only invokes async-signal-safe libc operations
+            // between fork and exec. The captured value is a plain integer.
+            unsafe {
+                cmd.pre_exec(move || {
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    // Close the fork-to-prctl race: if the parent already died,
+                    // terminate before exec rather than becoming an orphan.
+                    if libc::getppid() != parent_pid {
+                        libc::raise(libc::SIGTERM);
+                    }
+                    Ok(())
+                });
+            }
+        }
     }
     cmd.spawn().context(context)
-}
-
-fn spawn_noop_child() -> Result<Child> {
-    Command::new("sh")
-        .arg("-c")
-        .arg("sleep 0")
-        .spawn()
-        .context("failed to spawn dry-run placeholder process")
 }
 
 #[cfg(test)]

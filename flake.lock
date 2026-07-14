@@ -81,6 +81,42 @@
         "type": "github"
       }
     },
+    "flake-utils_3": {
+      "inputs": {
+        "systems": "systems_3"
+      },
+      "locked": {
+        "lastModified": 1731533236,
+        "narHash": "sha256-l0KFg5HjrsfsO/JpG+r7fRrqm12kzFHyUHqHCVpMMbI=",
+        "owner": "numtide",
+        "repo": "flake-utils",
+        "rev": "11707dc2f618dd54ca8739b309ec4fc024de578b",
+        "type": "github"
+      },
+      "original": {
+        "owner": "numtide",
+        "repo": "flake-utils",
+        "type": "github"
+      }
+    },
+    "flake-utils_4": {
+      "inputs": {
+        "systems": "systems_4"
+      },
+      "locked": {
+        "lastModified": 1731533236,
+        "narHash": "sha256-l0KFg5HjrsfsO/JpG+r7fRrqm12kzFHyUHqHCVpMMbI=",
+        "owner": "numtide",
+        "repo": "flake-utils",
+        "rev": "11707dc2f618dd54ca8739b309ec4fc024de578b",
+        "type": "github"
+      },
+      "original": {
+        "owner": "numtide",
+        "repo": "flake-utils",
+        "type": "github"
+      }
+    },
     "meta-harbor": {
       "inputs": {
         "flake-utils": [
@@ -160,7 +196,7 @@
     },
     "osxcross": {
       "inputs": {
-        "flake-utils": "flake-utils_2",
+        "flake-utils": "flake-utils_3",
         "nixpkgs": [
           "rs-harbor",
           "nixpkgs"
@@ -212,10 +248,7 @@
     "plinth_2": {
       "inputs": {
         "crane": "crane_3",
-        "flake-utils": [
-          "steampipe",
-          "flake-utils"
-        ],
+        "flake-utils": "flake-utils_4",
         "nixpkgs": [
           "steampipe",
           "nixpkgs"
@@ -243,10 +276,7 @@
           "rs-harbor",
           "crane"
         ],
-        "flake-utils": [
-          "rs-harbor",
-          "flake-utils"
-        ],
+        "flake-utils": "flake-utils",
         "nixpkgs": [
           "rs-harbor",
           "nixpkgs"
@@ -262,7 +292,7 @@
     "rs-harbor": {
       "inputs": {
         "crane": "crane",
-        "flake-utils": "flake-utils",
+        "flake-utils": "flake-utils_2",
         "meta-harbor": "meta-harbor",
         "nixpkgs": "nixpkgs",
         "osxcross": "osxcross",
@@ -386,11 +416,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1781867861,
-        "narHash": "sha256-98T7bT8nb67C7Yn2qQcSgIg24kYpiUBQ7rl2IaLg4k8=",
+        "lastModified": 1783765827,
+        "narHash": "sha256-ySGBnjJpnmvGEXq0wBUx4c0Ft/I4YTeiE2gQDmkKiRU=",
         "ref": "refs/heads/trunk",
-        "rev": "81a8797d96551b446788d9382c592fdc4d0f0b09",
-        "revCount": 193,
+        "rev": "850c471fda3c5079fc6aff791c9c9cc5bd31b114",
+        "revCount": 198,
         "type": "git",
         "url": "https://codeberg.org/caniko/steampipe.git"
       },
@@ -415,6 +445,36 @@
       }
     },
     "systems_2": {
+      "locked": {
+        "lastModified": 1681028828,
+        "narHash": "sha256-Vy1rq5AaRuLzOxct8nz4T6wlgyUR7zLU309k9mBC768=",
+        "owner": "nix-systems",
+        "repo": "default",
+        "rev": "da67096a3b9bf56a91d16901293e51ba5b49a27e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-systems",
+        "repo": "default",
+        "type": "github"
+      }
+    },
+    "systems_3": {
+      "locked": {
+        "lastModified": 1681028828,
+        "narHash": "sha256-Vy1rq5AaRuLzOxct8nz4T6wlgyUR7zLU309k9mBC768=",
+        "owner": "nix-systems",
+        "repo": "default",
+        "rev": "da67096a3b9bf56a91d16901293e51ba5b49a27e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-systems",
+        "repo": "default",
+        "type": "github"
+      }
+    },
+    "systems_4": {
       "locked": {
         "lastModified": 1681028828,
         "narHash": "sha256-Vy1rq5AaRuLzOxct8nz4T6wlgyUR7zLU309k9mBC768=",

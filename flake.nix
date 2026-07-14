@@ -7,7 +7,9 @@
     nixpkgs.follows = "rs-harbor/nixpkgs";
     rust-overlay.follows = "rs-harbor/rust-overlay";
     crane.follows = "rs-harbor/crane";
-    flake-utils.follows = "rs-harbor/flake-utils";
+    # rs-harbor no longer exports flake-utils; keep this direct input while
+    # fragpipe and steampipe still use eachDefaultSystem.
+    flake-utils.url = "github:numtide/flake-utils";
 
     # The steampipe cluster harness (cluster-ctl + lib.mkTestCluster). fragpipe
     # re-exports it (see `lib.steampipe` and `packages.cluster-ctl` below) so
@@ -163,6 +165,7 @@
         checks = self.checks.${system};
         packages = with pkgs; [
           cargo-nextest
+          mold
           rust-analyzer
         ];
       };

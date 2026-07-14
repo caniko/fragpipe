@@ -20,19 +20,25 @@ pub fn read_lossy(path: &Path) -> String {
 }
 
 pub fn classify_log<'a>(process: &'a ProcessConfig, log: &str) -> Option<LogSignal<'a>> {
-    for marker in &process.pass_markers {
-        if log.contains(marker) {
-            return Some(LogSignal::Pass(marker.as_str()));
-        }
-    }
-
+    // A completion marker never cancels evidence of a panic, invariant
+    // violation, or non-zero shutdown in the same accumulated log.
     for marker in &process.fatal_markers {
         if marker == "Graceful shutdown: exit_code=" {
-            if log.contains(marker) && !log.contains("Graceful shutdown: exit_code=0") {
+            if log.lines().any(|line| {
+                line.split_once(marker)
+                    .map(|(_, suffix)| suffix.split_whitespace().next() != Some("0"))
+                    .unwrap_or(false)
+            }) {
                 return Some(LogSignal::Fatal(marker.as_str()));
             }
         } else if log.contains(marker) {
             return Some(LogSignal::Fatal(marker.as_str()));
+        }
+    }
+
+    for marker in &process.pass_markers {
+        if log.contains(marker) {
+            return Some(LogSignal::Pass(marker.as_str()));
         }
     }
 
@@ -105,6 +111,15 @@ mod tests {
     }
 
     #[test]
+    fn classify_log_fatal_marker_wins_over_pass_marker() {
+        let cfg = test_process_config();
+        assert_eq!(
+            classify_log(&cfg, "GAME OVER\n[FATAL] invariant failed"),
+            Some(LogSignal::Fatal("[FATAL]"))
+        );
+    }
+
+    #[test]
     fn classify_log_graceful_shutdown_exit_code_0_not_fatal() {
         let cfg = test_process_config();
         assert_eq!(classify_log(&cfg, "Graceful shutdown: exit_code=0"), None);
@@ -115,6 +130,18 @@ mod tests {
         let cfg = test_process_config();
         assert_eq!(
             classify_log(&cfg, "Graceful shutdown: exit_code=1"),
+            Some(LogSignal::Fatal("Graceful shutdown: exit_code="))
+        );
+    }
+
+    #[test]
+    fn nonzero_shutdown_is_fatal_even_when_log_also_contains_zero_shutdown() {
+        let cfg = test_process_config();
+        assert_eq!(
+            classify_log(
+                &cfg,
+                "Graceful shutdown: exit_code=0\nGraceful shutdown: exit_code=11\nGAME OVER"
+            ),
             Some(LogSignal::Fatal("Graceful shutdown: exit_code="))
         );
     }
