@@ -8,6 +8,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
+use serde_json;
 
 use crate::android;
 use crate::config::{
@@ -658,7 +659,80 @@ pub struct AndroidUiRunOptions {
     pub adb_serial: Option<String>,
     pub device: bool,
     pub launch_config: Option<String>,
+    pub visual_fixtures: Option<String>,
     pub output_format: OutputFormat,
+}
+
+/// Stable semantic fixture names understood by the Android visual harness.
+///
+/// The list is deliberately explicit so `--visual-fixtures all` cannot drift
+/// when a producer adds an unrelated debug screen.
+pub const ANDROID_VISUAL_FIXTURES: &[&str] = &[
+    "main_menu",
+    "settings",
+    "game_browser",
+    "quick_match",
+    "host_lobby",
+    "awaiting_room",
+    "chat",
+    "battle_hud",
+    "tactics_draft",
+    "board_formation",
+    "game_over",
+    "android_steam_unavailable",
+];
+
+fn select_android_visual_fixtures(spec: Option<&str>) -> Result<Vec<String>> {
+    let Some(spec) = spec else {
+        return Ok(vec!["main_menu".to_owned()]);
+    };
+    if spec == "all" {
+        return Ok(ANDROID_VISUAL_FIXTURES
+            .iter()
+            .map(|fixture| (*fixture).to_owned())
+            .collect());
+    }
+    let selected = ANDROID_VISUAL_FIXTURES
+        .iter()
+        .filter(|fixture| wildcard_matches(spec, fixture))
+        .map(|fixture| (*fixture).to_owned())
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        bail!(
+            "android visual fixture glob {spec:?} matched none; available: {}",
+            ANDROID_VISUAL_FIXTURES.join(", ")
+        );
+    }
+    Ok(selected)
+}
+
+fn wildcard_matches(pattern: &str, value: &str) -> bool {
+    fn inner(pattern: &[u8], value: &[u8]) -> bool {
+        match pattern.split_first() {
+            None => value.is_empty(),
+            Some((b'*', rest)) => {
+                inner(rest, value) || value.first().is_some_and(|_| inner(pattern, &value[1..]))
+            }
+            Some((b'?', rest)) => value.first().is_some_and(|_| inner(rest, &value[1..])),
+            Some((byte, rest)) => value.first() == Some(byte) && inner(rest, &value[1..]),
+        }
+    }
+    inner(pattern.as_bytes(), value.as_bytes())
+}
+
+fn fixture_launch_config(base: Option<&str>, fixture: &str) -> Result<String> {
+    let mut value = match base {
+        Some(raw) => serde_json::from_str(raw).context("parse --launch-config JSON")?,
+        None => serde_json::json!({}),
+    };
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("--launch-config must contain a JSON object"))?;
+    object.insert(
+        "visual_fixture".to_owned(),
+        serde_json::Value::String(fixture.to_owned()),
+    );
+    serde_json::to_string(&value).context("serialize Android visual fixture launch config")
 }
 
 pub struct AndroidDoctorOptions {
@@ -769,6 +843,7 @@ pub fn run_android_ui(options: AndroidUiRunOptions) -> Result<()> {
 
     let max_runs = options.max_runs.unwrap_or(config.webrtc.max_runs);
     let timeout = Duration::from_secs(options.timeout_secs.unwrap_or(60));
+    let fixtures = select_android_visual_fixtures(options.visual_fixtures.as_deref())?;
 
     if !options.no_build {
         run_build(&config, options.dry_run)?;
@@ -790,23 +865,31 @@ pub fn run_android_ui(options: AndroidUiRunOptions) -> Result<()> {
     let mut failed = 0;
     for run in 1..=max_runs {
         println!("=== ANDROID UI RUN {run}/{max_runs} ===");
-        let report = run_one_android_ui(
-            &config,
-            &android_cfg,
-            run,
-            timeout,
-            options.dry_run,
-            options.launch_config.as_deref(),
-        )?;
-        emit_report(options.output_format, &report)?;
-        match report.status {
-            RunStatus::Pass => passed += 1,
-            RunStatus::Fail | RunStatus::Timeout => {
-                failed += 1;
-                if options.stop_on_failure {
-                    break;
+        for fixture in &fixtures {
+            println!("--- visual fixture: {fixture} ---");
+            let fixture_config = fixture_launch_config(options.launch_config.as_deref(), fixture)?;
+            let report = run_one_android_ui(
+                &config,
+                &android_cfg,
+                run,
+                fixture,
+                timeout,
+                options.dry_run,
+                Some(fixture_config.as_str()),
+            )?;
+            emit_report(options.output_format, &report)?;
+            match report.status {
+                RunStatus::Pass => passed += 1,
+                RunStatus::Fail | RunStatus::Timeout => {
+                    failed += 1;
+                    if options.stop_on_failure {
+                        break;
+                    }
                 }
             }
+        }
+        if options.stop_on_failure && failed > 0 {
+            break;
         }
     }
 
@@ -996,6 +1079,7 @@ fn run_one_android_ui(
     config: &Config,
     android_cfg: &AndroidConfig,
     run: u32,
+    fixture: &str,
     timeout: Duration,
     dry_run: bool,
     launch_config: Option<&str>,
@@ -1006,11 +1090,13 @@ fn run_one_android_ui(
     }
     remove_if_exists(&android_cfg.logcat_log)?;
     let mut logcat: Option<Child> = None;
-    let screenshot_path = android_cfg.screenshot_dir.join(format!("run-{run}.png"));
+    let screenshot_path = android_cfg
+        .screenshot_dir
+        .join(format!("run-{run}-{fixture}.png"));
 
     let result: Result<String> = (|| {
         if let Some(contents) = launch_config {
-            android::push_launch_config(android_cfg, contents, dry_run)?;
+            android::push_visual_launch_config(android_cfg, contents, dry_run)?;
         }
         logcat = android::tail_logcat(android_cfg, dry_run)?;
         android::start_activity(android_cfg, dry_run)?;
@@ -1019,14 +1105,20 @@ fn run_one_android_ui(
         }
 
         let started = Instant::now();
+        let fixture_ready_marker = format!("ANDROID_VISUAL_FIXTURE_READY:{fixture}");
         loop {
             let logcat_text = read_lossy(&android_cfg.logcat_log);
             if let Some(label) = classify_non_success_log(&config.process, &logcat_text) {
                 bail!("android UI app reported {label}");
             }
             if started.elapsed() >= Duration::from_secs(5) {
+                if !logcat_text.contains(&fixture_ready_marker) {
+                    bail!(
+                        "android UI app did not acknowledge visual fixture {fixture} with {fixture_ready_marker}"
+                    );
+                }
                 android::capture_screenshot(android_cfg, &screenshot_path, false)?;
-                return Ok("LANDSCAPE_SCREENSHOT".into());
+                return Ok(format!("LANDSCAPE_SCREENSHOT:{fixture}"));
             }
             if started.elapsed() > timeout {
                 bail!(
@@ -1256,6 +1348,23 @@ mod tests {
         assert_eq!(config.internet.max_runs, 1);
         assert_eq!(config.internet.timeout_secs, 200);
         assert_eq!(config.internet.pass_marker, "GAME OVER");
+    }
+
+    #[test]
+    fn android_visual_fixture_catalog_supports_all_and_globs() {
+        let all = select_android_visual_fixtures(Some("all")).unwrap();
+        assert_eq!(all.len(), ANDROID_VISUAL_FIXTURES.len());
+        let battle = select_android_visual_fixtures(Some("battle_*")).unwrap();
+        assert_eq!(battle, vec!["battle_hud"]);
+        assert!(select_android_visual_fixtures(Some("missing*")).is_err());
+    }
+
+    #[test]
+    fn fixture_launch_config_preserves_user_fields_and_adds_fixture() {
+        let value = fixture_launch_config(Some(r#"{"mode":"smoke"}"#), "settings").unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&value).unwrap();
+        assert_eq!(parsed["mode"], "smoke");
+        assert_eq!(parsed["visual_fixture"], "settings");
     }
 
     #[test]

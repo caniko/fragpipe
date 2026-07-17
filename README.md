@@ -47,6 +47,26 @@ stores logcat plus a JSON report:
 fragpipe android-ui --config examples/chessbender.toml --max-runs 1
 ```
 
+For the semantic visual matrix, select the explicit fixture catalog (or a
+glob). Each fixture is written to the Android launch contract and the app must
+acknowledge it before fragpipe accepts the screenshot:
+
+```bash
+fragpipe android-ui --config examples/chessbender.toml --visual-fixtures all
+fragpipe android-ui --config examples/chessbender.toml --visual-fixtures 'battle_*'
+```
+
+The current catalog is `main_menu`, `settings`, `game_browser`,
+`quick_match`, `host_lobby`, `awaiting_room`, `chat`, `battle_hud`,
+`tactics_draft`, `board_formation`, `game_over`, and
+`android_steam_unavailable`. A fixture is not considered covered merely
+because it has a name: the app acknowledgement and the downstream visual
+rubric evidence manifest are required.
+
+If `launch_config_path` is customized, fragpipe also mirrors the fixture
+request to the canonical `/data/local/tmp/chessbender-launch.json` path used
+by the Regicide client, so fixture selection cannot silently disappear.
+
 Use `android-doctor` to validate SDK, adb, APK, target, package, and activity
 configuration before running a loop:
 

@@ -269,6 +269,10 @@ struct AndroidUiArgs {
     #[arg(long)]
     launch_config: Option<String>,
 
+    /// Visual fixture catalog selection (`all` or a `*`/`?` glob).
+    #[arg(long, value_name = "ALL|GLOB")]
+    visual_fixtures: Option<String>,
+
     /// Print commands without launching adb / emulator.
     #[arg(long)]
     dry_run: bool,
@@ -372,6 +376,7 @@ pub fn run(cli: Cli) -> Result<()> {
             adb_serial: args.adb_serial,
             device: args.device,
             launch_config: args.launch_config,
+            visual_fixtures: args.visual_fixtures,
             output_format: args.output_format.into(),
         }),
         Commands::AndroidDoctor(args) => run_android_doctor(AndroidDoctorOptions {

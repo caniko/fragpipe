@@ -363,8 +363,27 @@ pub fn push_rendezvous(cfg: &AndroidConfig, contents: &str, dry_run: bool) -> Re
     AndroidDevice::new(cfg).push_file(&cfg.rendezvous_path, contents, "rendezvous", dry_run)
 }
 
+pub const CANONICAL_VISUAL_LAUNCH_CONFIG_PATH: &str = "/data/local/tmp/chessbender-launch.json";
+
 pub fn push_launch_config(cfg: &AndroidConfig, contents: &str, dry_run: bool) -> Result<()> {
     AndroidDevice::new(cfg).push_file(&cfg.launch_config_path, contents, "launch config", dry_run)
+}
+
+/// Push a UI fixture request to the path consumed by the game, even when a
+/// project overrides the generic launch-config path for another Android test.
+/// The configured path is retained for existing consumers; the canonical copy
+/// makes visual fixture selection deterministic across profiles.
+pub fn push_visual_launch_config(cfg: &AndroidConfig, contents: &str, dry_run: bool) -> Result<()> {
+    push_launch_config(cfg, contents, dry_run)?;
+    if cfg.launch_config_path != CANONICAL_VISUAL_LAUNCH_CONFIG_PATH {
+        AndroidDevice::new(cfg).push_file(
+            CANONICAL_VISUAL_LAUNCH_CONFIG_PATH,
+            contents,
+            "visual launch config",
+            dry_run,
+        )?;
+    }
+    Ok(())
 }
 
 pub fn start_activity(cfg: &AndroidConfig, dry_run: bool) -> Result<()> {
@@ -467,6 +486,14 @@ mod tests {
             launch_config_path: "/data/local/tmp/chessbender-launch.json".into(),
             screenshot_dir: PathBuf::from("logs/fragpipe-android-screenshots"),
         }
+    }
+
+    #[test]
+    fn canonical_visual_launch_path_matches_default_profile() {
+        assert_eq!(
+            cfg(false).launch_config_path,
+            CANONICAL_VISUAL_LAUNCH_CONFIG_PATH
+        );
     }
 
     #[test]
