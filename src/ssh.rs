@@ -113,6 +113,7 @@ pub fn remote_log(remote: &RemotePeer) -> Result<String> {
         shell_quote(&remote.remote_dir),
         shell_quote(&remote.log_file),
     );
+    let command = remote_shell(&command);
     let output = Command::new("ssh")
         .arg(&remote.host)
         .arg(command)
@@ -122,16 +123,25 @@ pub fn remote_log(remote: &RemotePeer) -> Result<String> {
 }
 
 fn run_ssh(host: &str, command: &str, dry_run: bool) -> Result<()> {
-    println!("ssh {host} {}", shell_quote(command));
+    let command = remote_shell(command);
+    println!("ssh {host} {command}");
     if dry_run {
         return Ok(());
     }
     let status = Command::new("ssh")
         .arg(host)
-        .arg(command)
+        .arg(&command)
         .status()
         .with_context(|| format!("failed to run ssh command on {host}"))?;
     ensure_success(status, "ssh command")
+}
+
+/// Fleetix user shells are Nushell on the game hosts, while Fragpipe's
+/// lifecycle snippets intentionally use portable POSIX utilities and syntax.
+/// Force a POSIX shell so options such as `mkdir -p` and redirections retain
+/// their meaning over SSH.
+fn remote_shell(command: &str) -> String {
+    format!("sh -lc {}", shell_quote(command))
 }
 
 fn run_rsync(
@@ -198,6 +208,13 @@ mod tests {
         let config = test_config();
         let remote = test_remote();
         deploy(&config, &remote, true).unwrap();
+    }
+
+    #[test]
+    fn remote_commands_are_explicitly_run_by_posix_shell() {
+        let command = remote_shell("mkdir -p '/tmp/game dir'");
+        assert!(command.starts_with("sh -lc "));
+        assert!(command.contains("mkdir -p"));
     }
 
     #[test]
