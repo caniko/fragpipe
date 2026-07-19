@@ -224,19 +224,14 @@ fn run_one_live(
 
     let started = Instant::now();
     loop {
-        if let Some(status) = listener
-            .try_wait()
-            .context("failed to poll local LAN listening peer")?
-        {
-            bail!("local LAN listening peer exited before pass marker: {status}");
-        }
-
+        // Read the logs before polling the child.  The game writes its pass
+        // marker and then exits cleanly; polling first races that final write
+        // and turns a successful game-over into a false failure.
         let listener_text = read_lossy(listener_log);
+        let remote_text = ssh::remote_log(remote)?;
         if let Some(label) = classify_non_success_log(&config.process, &listener_text) {
             bail!("local LAN listening peer reported {label}");
         }
-
-        let remote_text = ssh::remote_log(remote)?;
         if let Some(label) = classify_non_success_log(&config.process, &remote_text) {
             bail!("remote LAN joining peer reported {label}");
         }
@@ -245,6 +240,13 @@ fn run_one_live(
             classify_log(&config.process, &remote_text),
         ) {
             return Ok(label.into());
+        }
+
+        if let Some(status) = listener
+            .try_wait()
+            .context("failed to poll local LAN listening peer")?
+        {
+            bail!("local LAN listening peer exited before pass marker: {status}");
         }
 
         if started.elapsed() > timeout {
