@@ -84,11 +84,14 @@ pub fn launch_remote(
 pub fn stop_remote(config: &Config, remote: &RemotePeer, dry_run: bool) -> Result<()> {
     let kill_name = crate::config::kill_name(config)?;
     let remote_pid = format!("{}/{}", remote.remote_dir, remote.pid_file);
+    let binary_name = remote_binary_name(config, remote)?;
+    let remote_binary = format!("{}/{}", remote.remote_dir, binary_name);
     run_ssh(
         &remote.host,
         &format!(
-            "if test -s {pid}; then kill $(cat {pid}) 2>/dev/null || true; fi; rm -f {pid}; pkill -x {name} 2>/dev/null || true",
+            "if test -s {pid}; then _fragpipe_pid=$(cat {pid}); pkill -P \"$_fragpipe_pid\" 2>/dev/null || true; kill \"$_fragpipe_pid\" 2>/dev/null || true; fi; rm -f {pid}; pkill -f {binary_pattern} 2>/dev/null || true; pkill -x {name} 2>/dev/null || true",
             pid = shell_quote(&remote_pid),
+            binary_pattern = shell_quote(&format!("^{remote_binary} ")),
             name = shell_quote(kill_name),
         ),
         dry_run,
