@@ -5,6 +5,7 @@
 //! supplies the UDP host/join arguments and watches both logs for the same
 //! pass/fatal markers used by the other runners.
 
+use std::fs;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::Child;
@@ -69,6 +70,15 @@ pub fn run_direct_1v1(options: DirectRunOptions) -> Result<()> {
     let timeout = Duration::from_secs(options.timeout_secs.unwrap_or(config.direct.timeout_secs));
     let local_ip = options.local_ip.unwrap_or(config.direct.local_ip);
     let port = options.port.unwrap_or(config.direct.port);
+    if max_runs == 0 {
+        bail!("direct-1v1 requires at least one run");
+    }
+    if timeout.is_zero() {
+        bail!("direct-1v1 timeout must be greater than zero");
+    }
+    if port == 0 {
+        bail!("direct-1v1 UDP port must be greater than zero");
+    }
 
     println!("Fragpipe project: {}", config.game.name);
     println!(
@@ -97,6 +107,7 @@ pub fn run_direct_1v1(options: DirectRunOptions) -> Result<()> {
             dry_run: options.dry_run,
         };
         let report = run_one(&context, run);
+        write_artifacts(&context, run, &report);
         emit_report(options.output_format, &report)?;
         match report.status {
             RunStatus::Pass => passed += 1,
@@ -336,6 +347,40 @@ fn emit_report(format: OutputFormat, report: &RunReport) -> Result<()> {
         OutputFormat::Jsonl => println!("{}", serde_json::to_string(report)?),
     }
     Ok(())
+}
+
+/// Preserve enough evidence to diagnose a failed run after the next run has
+/// cleared the live logs. Artifact writes are best-effort: the test result is
+/// still authoritative when a read-only artifact directory is unavailable.
+fn write_artifacts(context: &DirectRunContext<'_>, run: u32, report: &RunReport) {
+    if context.dry_run {
+        return;
+    }
+    let root = crate::config::project_root(context.config);
+    let dir = crate::config::resolve_path(root, &context.config.direct.artifact_dir)
+        .join(format!("run-{run:02}"));
+    if let Err(error) = fs::create_dir_all(&dir) {
+        eprintln!(
+            "warning: failed to create direct-run artifact directory {}: {error}",
+            dir.display()
+        );
+        return;
+    }
+    let write = |name: &str, contents: &[u8]| {
+        if let Err(error) = fs::write(dir.join(name), contents) {
+            eprintln!("warning: failed to write direct-run artifact {name}: {error}");
+        }
+    };
+    let listener_log = crate::config::resolve_path(root, &context.config.game.listener_log);
+    if let Ok(contents) = fs::read(&listener_log) {
+        write("listener.log", &contents);
+    }
+    if let Ok(remote_log) = ssh::remote_log(context.remote) {
+        write("remote.log", remote_log.as_bytes());
+    }
+    if let Ok(summary) = serde_json::to_vec_pretty(report) {
+        write("report.json", &summary);
+    }
 }
 
 #[cfg(test)]

@@ -39,6 +39,10 @@ supports the LAN transport here; Steam remains a separate cluster workflow.
 Remote processes receive a per-peer PID file so a failed run can be stopped
 without killing unrelated games.
 
+Each non-dry run also preserves `logs/fragpipe/direct-1v1/run-NN/` with the
+local listener log, remote log tail, and JSON result report. Override this
+directory with `[direct].artifact_dir` when a project keeps evidence elsewhere.
+
 ## Android 1v1
 
 `android-1v1` starts a desktop listening peer and launches an Android joining

@@ -164,6 +164,9 @@ pub struct DirectConfig {
     pub max_runs: u32,
     #[serde(default = "default_direct_ready_marker")]
     pub ready_marker: String,
+    /// Directory for per-run reports and captured listener/joiner logs.
+    #[serde(default = "default_direct_artifact_dir")]
+    pub artifact_dir: PathBuf,
     #[serde(default)]
     pub listener_args: Vec<String>,
     #[serde(default)]
@@ -178,6 +181,7 @@ impl Default for DirectConfig {
             timeout_secs: default_timeout_secs(),
             max_runs: default_max_runs(),
             ready_marker: default_direct_ready_marker(),
+            artifact_dir: default_direct_artifact_dir(),
             listener_args: Vec::new(),
             joiner_args: Vec::new(),
         }
@@ -394,6 +398,10 @@ fn default_join_addr_marker() -> String {
 
 fn default_direct_ready_marker() -> String {
     "LAN host started on port".into()
+}
+
+fn default_direct_artifact_dir() -> PathBuf {
+    PathBuf::from("logs/fragpipe/direct-1v1")
 }
 
 fn default_internet_pass_marker() -> String {
