@@ -196,8 +196,11 @@ fn run_one_inner(context: &DirectRunContext<'_>) -> Result<String> {
     }
 
     let result = run_one_live(context, &mut listener, &listener_log);
-    ssh::stop_remote(config, remote, false)?;
+    // Always reap the local process even if the remote cleanup command fails;
+    // otherwise a transient SSH outage leaks a listener into the next run.
+    let stop_result = ssh::stop_remote(config, remote, false);
     kill_child(&mut listener);
+    stop_result?;
     result
 }
 
