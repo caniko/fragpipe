@@ -67,13 +67,15 @@ pub fn launch_remote(
     }
 
     let remote_binary = format!("{}/{}", remote.remote_dir, binary_name);
+    let remote_pid = format!("{}/{}", remote.remote_dir, remote.pid_file);
     let command = format!(
-        "cd {} && {}nohup {} {} > {} 2>&1 < /dev/null &",
+        "cd {} && {}nohup {} {} > {} 2>&1 < /dev/null & printf '%s\\n' $! > {}",
         shell_quote(&remote.remote_dir),
         env,
         shell_quote(&remote_binary),
         shell_args(args),
         shell_quote(&remote.log_file),
+        shell_quote(&remote_pid),
     );
     println!("==> Remote joining peer on {}: {}", remote.name, command);
     run_ssh(&remote.host, &command, dry_run)
@@ -81,9 +83,26 @@ pub fn launch_remote(
 
 pub fn stop_remote(config: &Config, remote: &RemotePeer, dry_run: bool) -> Result<()> {
     let kill_name = crate::config::kill_name(config)?;
+    let remote_pid = format!("{}/{}", remote.remote_dir, remote.pid_file);
     run_ssh(
         &remote.host,
-        &format!("pkill -x {} 2>/dev/null || true", shell_quote(kill_name)),
+        &format!(
+            "if test -s {pid}; then kill $(cat {pid}) 2>/dev/null || true; fi; rm -f {pid}; pkill -x {name} 2>/dev/null || true",
+            pid = shell_quote(&remote_pid),
+            name = shell_quote(kill_name),
+        ),
+        dry_run,
+    )
+}
+
+pub fn clear_remote_log(remote: &RemotePeer, dry_run: bool) -> Result<()> {
+    run_ssh(
+        &remote.host,
+        &format!(
+            "rm -f {}/{}",
+            shell_quote(&remote.remote_dir),
+            shell_quote(&remote.log_file)
+        ),
         dry_run,
     )
 }
@@ -165,6 +184,7 @@ mod tests {
             host: "test-host".into(),
             remote_dir: "/remote".into(),
             log_file: "game.log".into(),
+            pid_file: ".fragpipe.pid".into(),
             binary_name: None,
             assets_dir: None,
             deploy: vec![],

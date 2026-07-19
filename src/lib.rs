@@ -1,5 +1,6 @@
 pub mod android;
 pub mod config;
+pub mod direct;
 pub mod logwatch;
 pub mod process;
 pub mod runner;
@@ -13,6 +14,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 
+use direct::{DirectRunOptions, OutputFormat as DirectOutputFormat, run_direct_1v1};
 use runner::{
     AndroidDoctorOptions, AndroidRunOptions, AndroidUiRunOptions, InternetRunOptions, OutputFormat,
     ShipOptions, WebRtcRunOptions, run_android_1v1, run_android_doctor, run_android_ui,
@@ -35,6 +37,9 @@ enum Commands {
     /// Run a native WebRTC Direct 1v1 smoke test.
     #[command(name = "webrtc-1v1")]
     Webrtc1v1(WebRtc1v1Args),
+    /// Run a physical-peer LAN/UDP 1v1 smoke test through SSH.
+    #[command(name = "direct-1v1")]
+    Direct1v1(Direct1v1Args),
     /// Run the forced-relay internet 1v1 smoke test.
     #[command(name = "internet-1v1")]
     Internet1v1(Internet1v1Args),
@@ -168,6 +173,61 @@ struct WebRtc1v1Args {
     /// Local WebRTC listen port.
     #[arg(long)]
     webrtc_port: Option<u16>,
+
+    /// Print commands without launching or SSHing.
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Output format.
+    #[arg(long, default_value = "text")]
+    output_format: CliOutputFormat,
+}
+
+#[derive(Debug, Parser)]
+struct Direct1v1Args {
+    /// Project config path.
+    #[arg(long, default_value = "fragpipe.toml")]
+    config: PathBuf,
+
+    /// Remote peer name from the config.
+    #[arg(long, required = true)]
+    remote: String,
+
+    /// Number of test runs.
+    #[arg(long)]
+    max_runs: Option<u32>,
+
+    /// Per-run timeout in seconds.
+    #[arg(long)]
+    timeout: Option<u64>,
+
+    /// Stop after the first failed run.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    stop_on_failure: bool,
+
+    /// Skip the configured build command.
+    #[arg(long)]
+    no_build: bool,
+
+    /// Skip binary/assets deployment.
+    #[arg(long)]
+    no_deploy: bool,
+
+    /// Local IP the remote peer should dial.
+    #[arg(long)]
+    local_ip: Option<IpAddr>,
+
+    /// UDP listen port.
+    #[arg(long)]
+    port: Option<u16>,
+
+    /// Add --headless to both peers.
+    #[arg(long)]
+    headless: bool,
+
+    /// Transport selector retained for MCP compatibility; only lan is supported.
+    #[arg(long, default_value = "lan")]
+    transport: String,
 
     /// Print commands without launching or SSHing.
     #[arg(long)]
@@ -336,6 +396,24 @@ pub fn run(cli: Cli) -> Result<()> {
             dry_run: args.dry_run,
             output_format: args.output_format.into(),
         }),
+        Commands::Direct1v1(args) => run_direct_1v1(DirectRunOptions {
+            config_path: args.config,
+            remote: args.remote,
+            max_runs: args.max_runs,
+            timeout_secs: args.timeout,
+            stop_on_failure: args.stop_on_failure,
+            no_build: args.no_build,
+            no_deploy: args.no_deploy,
+            local_ip: args.local_ip,
+            port: args.port,
+            headless: args.headless,
+            dry_run: args.dry_run,
+            output_format: match args.output_format {
+                CliOutputFormat::Text => DirectOutputFormat::Text,
+                CliOutputFormat::Jsonl => DirectOutputFormat::Jsonl,
+            },
+            transport: Some(args.transport),
+        }),
         Commands::Internet1v1(args) => run_internet_1v1(InternetRunOptions {
             config_path: args.config,
             max_runs: args.max_runs,
@@ -401,6 +479,63 @@ mod tests {
     fn parse_internet_1v1_subcommand() {
         let cli = Cli::try_parse_from(["fragpipe", "internet-1v1"]).unwrap();
         assert!(matches!(cli.command, Commands::Internet1v1(_)));
+    }
+
+    #[test]
+    fn direct_1v1_defaults_to_lan() {
+        let cli = Cli::try_parse_from(["fragpipe", "direct-1v1", "--remote", "nomad"]).unwrap();
+        if let Commands::Direct1v1(args) = cli.command {
+            assert_eq!(args.config, PathBuf::from("fragpipe.toml"));
+            assert_eq!(args.remote, "nomad");
+            assert_eq!(args.transport, "lan");
+            assert!(!args.headless);
+            assert!(!args.dry_run);
+        } else {
+            panic!("expected Direct1v1 variant");
+        }
+    }
+
+    #[test]
+    fn direct_1v1_forwards_lan_flags() {
+        let cli = Cli::try_parse_from([
+            "fragpipe",
+            "direct-1v1",
+            "--config",
+            "game.toml",
+            "--remote",
+            "nomad",
+            "--max-runs",
+            "3",
+            "--timeout",
+            "90",
+            "--no-build",
+            "--no-deploy",
+            "--local-ip",
+            "10.10.0.1",
+            "--port",
+            "27100",
+            "--headless",
+            "--transport",
+            "lan",
+            "--dry-run",
+            "--output-format",
+            "jsonl",
+        ])
+        .unwrap();
+        if let Commands::Direct1v1(args) = cli.command {
+            assert_eq!(args.config, PathBuf::from("game.toml"));
+            assert_eq!(args.max_runs, Some(3));
+            assert_eq!(args.timeout, Some(90));
+            assert!(args.no_build);
+            assert!(args.no_deploy);
+            assert_eq!(args.local_ip, Some("10.10.0.1".parse().unwrap()));
+            assert_eq!(args.port, Some(27100));
+            assert!(args.headless);
+            assert!(args.dry_run);
+            assert!(matches!(args.output_format, CliOutputFormat::Jsonl));
+        } else {
+            panic!("expected Direct1v1 variant");
+        }
     }
 
     #[test]

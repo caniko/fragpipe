@@ -404,7 +404,7 @@ struct DirectRunInput {
     common: CommonInput,
     /// Remote peer name from the config ([[remote]] section).
     remote: String,
-    /// Transport protocol: "lan" (default) or "steam".
+    /// Transport protocol. Direct LAN is currently the supported transport.
     #[serde(default)]
     transport: Option<String>,
     /// UDP listener port (LAN transport only).
@@ -413,6 +413,12 @@ struct DirectRunInput {
     /// Local IP for the joiner to connect to (LAN transport only).
     #[serde(default)]
     local_ip: Option<String>,
+    /// Skip binary/assets deployment.
+    #[serde(default)]
+    no_deploy: Option<bool>,
+    /// Add --headless to both peers.
+    #[serde(default)]
+    headless: Option<bool>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -985,9 +991,7 @@ impl FragpipeMcp {
         self.run_single("webrtc-1v1", input, 300)
     }
 
-    #[tool(
-        description = "Run bare-metal host2host 1v1 via SSH (no VMs). Supports LAN (UDP/libp2p) and Steam (Steamworks P2P) transport."
-    )]
+    #[tool(description = "Run a bare-metal host-to-host LAN/UDP 1v1 through fragpipe over SSH.")]
     fn repeat_direct_1v1(
         &self,
         Parameters(input): Parameters<DirectRunInput>,
@@ -1009,6 +1013,12 @@ impl FragpipeMcp {
         if let Some(local_ip) = &input.local_ip {
             args.push("--local-ip".into());
             args.push(local_ip.clone());
+        }
+        if input.no_deploy.unwrap_or(false) {
+            args.push("--no-deploy".into());
+        }
+        if input.headless.unwrap_or(false) {
+            args.push("--headless".into());
         }
         let total_timeout = timeout.saturating_mul(max_runs as u64).saturating_add(120);
         let (output, _) = self.run_fragpipe(&input.common, args, total_timeout)?;

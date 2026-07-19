@@ -7,12 +7,15 @@ use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub game: GameConfig,
     #[serde(default)]
     pub process: ProcessConfig,
     #[serde(default)]
     pub webrtc: WebRtcConfig,
+    #[serde(default)]
+    pub direct: DirectConfig,
     #[serde(default)]
     pub internet: InternetConfig,
     #[serde(default)]
@@ -25,6 +28,7 @@ pub struct Config {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GameConfig {
     #[serde(default = "default_game_name")]
     pub name: String,
@@ -48,12 +52,14 @@ pub struct GameConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EnvPair {
     pub name: String,
     pub value: String,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProcessConfig {
     #[serde(default)]
     pub kill_name: Option<String>,
@@ -74,6 +80,7 @@ impl Default for ProcessConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WebRtcConfig {
     #[serde(default = "default_local_ip")]
     pub local_ip: IpAddr,
@@ -143,6 +150,40 @@ impl Default for InternetConfig {
     }
 }
 
+/// Direct physical-LAN 1v1 orchestration settings.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DirectConfig {
+    #[serde(default = "default_direct_local_ip")]
+    pub local_ip: IpAddr,
+    #[serde(default = "default_direct_port")]
+    pub port: u16,
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
+    #[serde(default = "default_max_runs")]
+    pub max_runs: u32,
+    #[serde(default = "default_direct_ready_marker")]
+    pub ready_marker: String,
+    #[serde(default)]
+    pub listener_args: Vec<String>,
+    #[serde(default)]
+    pub joiner_args: Vec<String>,
+}
+
+impl Default for DirectConfig {
+    fn default() -> Self {
+        Self {
+            local_ip: default_direct_local_ip(),
+            port: default_direct_port(),
+            timeout_secs: default_timeout_secs(),
+            max_runs: default_max_runs(),
+            ready_marker: default_direct_ready_marker(),
+            listener_args: Vec::new(),
+            joiner_args: Vec::new(),
+        }
+    }
+}
+
 /// Android emulator + APK driving for the `android-1v1` runner.
 ///
 /// Fragpipe boots a pre-baked AVD, installs the test-peer APK, pushes a
@@ -150,6 +191,7 @@ impl Default for InternetConfig {
 /// via `am start`, and tails logcat looking for the same pass/fatal markers
 /// the desktop peer emits.
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct AndroidConfig {
     /// Android target type. `emulator` boots/kills the configured AVD; `device`
     /// uses an already-attached physical device selected by `adb_serial`.
@@ -226,12 +268,15 @@ pub enum AndroidTarget {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RemotePeer {
     pub name: String,
     pub host: String,
     pub remote_dir: String,
     #[serde(default = "default_remote_log")]
     pub log_file: String,
+    #[serde(default = "default_remote_pid_file")]
+    pub pid_file: String,
     #[serde(default)]
     pub binary_name: Option<String>,
     #[serde(default)]
@@ -245,6 +290,7 @@ pub struct RemotePeer {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeployPath {
     pub source: PathBuf,
     pub target: String,
@@ -310,8 +356,20 @@ fn default_remote_log() -> String {
     "game.log".into()
 }
 
+fn default_remote_pid_file() -> String {
+    ".fragpipe.pid".into()
+}
+
 fn default_local_ip() -> IpAddr {
     "127.0.0.1".parse().expect("valid default IP")
+}
+
+fn default_direct_local_ip() -> IpAddr {
+    default_local_ip()
+}
+
+fn default_direct_port() -> u16 {
+    27100
 }
 
 fn default_webrtc_port() -> u16 {
@@ -332,6 +390,10 @@ fn default_max_runs() -> u32 {
 
 fn default_join_addr_marker() -> String {
     "WEBRTC_JOIN_ADDR=".into()
+}
+
+fn default_direct_ready_marker() -> String {
+    "LAN host started on port".into()
 }
 
 fn default_internet_pass_marker() -> String {
@@ -412,6 +474,20 @@ mod tests {
         assert_eq!(config.game.name, "game");
         assert!(config.android.is_none());
         assert!(config.remote.is_empty());
+    }
+
+    #[test]
+    fn unknown_sections_are_rejected_instead_of_silently_ignored() {
+        let result: Result<Config, _> = toml::from_str(
+            r#"
+            [game]
+            binary = "game"
+            [direct]
+            port = 27100
+            steam_transport_that_does_not_exist = true
+            "#,
+        );
+        assert!(result.is_err());
     }
 
     #[test]
@@ -629,6 +705,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.remote[0].log_file, "game.log");
+        assert_eq!(config.remote[0].pid_file, ".fragpipe.pid");
     }
 
     #[test]

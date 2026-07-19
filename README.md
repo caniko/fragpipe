@@ -23,6 +23,22 @@ The flow starts a local listening peer, waits for `WEBRTC_JOIN_ADDR=...`,
 rewrites wildcard or loopback listen addresses to a reachable local IP, then
 starts the remote joining peer over SSH.
 
+## Direct LAN 1v1
+
+`direct-1v1` runs a physical host-to-host UDP game. It deploys the configured
+binary and assets to the named SSH peer, starts the local UDP listener, waits
+for its readiness marker, launches the remote joiner, and requires the pass
+marker in both logs:
+
+```bash
+fragpipe direct-1v1 --config fragpipe.toml --remote nomad --headless --max-runs 1
+```
+
+The game config owns the host/join arguments and direct-link address. Fragpipe
+supports the LAN transport here; Steam remains a separate cluster workflow.
+Remote processes receive a per-peer PID file so a failed run can be stopped
+without killing unrelated games.
+
 ## Android 1v1
 
 `android-1v1` starts a desktop listening peer and launches an Android joining
@@ -77,8 +93,8 @@ fragpipe android-doctor --config examples/chessbender.toml
 ## MCP and Codex Plugin
 
 Fragpipe also ships a `fragpipe-mcp` binary plus Codex plugin metadata. The MCP
-server exposes the same fix-loop surface for native WebRTC, Android WebRTC,
-Android UI, Android doctor, and cross-platform matrix runs.
+server exposes the same fix-loop surface for direct LAN, native WebRTC, Android
+WebRTC, Android UI, Android doctor, and cross-platform matrix runs.
 
 Run the packaged MCP server with:
 
