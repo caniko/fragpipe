@@ -57,6 +57,12 @@ pub fn launch_remote(
     args: &[String],
     dry_run: bool,
 ) -> Result<()> {
+    let command = launch_command(config, remote, args)?;
+    println!("==> Remote joining peer on {}: {}", remote.name, command);
+    run_ssh(&remote.host, &command, dry_run)
+}
+
+fn launch_command(config: &Config, remote: &RemotePeer, args: &[String]) -> Result<String> {
     let binary_name = remote_binary_name(config, remote)?;
     let mut env = String::new();
     for pair in &config.game.env {
@@ -69,7 +75,7 @@ pub fn launch_remote(
     let remote_binary = format!("{}/{}", remote.remote_dir, binary_name);
     let remote_pid = format!("{}/{}", remote.remote_dir, remote.pid_file);
     let command = format!(
-        "cd {} && {}nohup {} {} > {} 2>&1 < /dev/null & printf '%s\\n' $! > {}",
+        "cd {} || exit 1; {}nohup {} {} > {} 2>&1 < /dev/null & printf '%s\\n' $! > {}",
         shell_quote(&remote.remote_dir),
         env,
         shell_quote(&remote_binary),
@@ -77,8 +83,7 @@ pub fn launch_remote(
         shell_quote(&remote.log_file),
         shell_quote(&remote_pid),
     );
-    println!("==> Remote joining peer on {}: {}", remote.name, command);
-    run_ssh(&remote.host, &command, dry_run)
+    Ok(command)
 }
 
 pub fn stop_remote(config: &Config, remote: &RemotePeer, dry_run: bool) -> Result<()> {
@@ -272,6 +277,15 @@ mod tests {
         let config = test_config();
         let remote = test_remote();
         launch_remote(&config, &remote, &["--join".into(), "addr".into()], true).unwrap();
+    }
+
+    #[test]
+    fn launch_command_does_not_background_directory_change() {
+        let config = test_config();
+        let remote = test_remote();
+        let command = launch_command(&config, &remote, &[]).unwrap();
+        assert!(command.contains("cd /remote || exit 1;"));
+        assert!(!command.contains("&&"));
     }
 
     #[test]
