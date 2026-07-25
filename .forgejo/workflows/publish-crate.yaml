@@ -6,12 +6,6 @@ name: Publish Crate
 
 on:
   workflow_dispatch:
-    inputs:
-      force_publish:
-        description: "Bypass release smoke checks and continue publishing."
-        required: false
-        default: false
-        type: boolean
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -20,7 +14,7 @@ concurrency:
 jobs:
   publish:
     enable-openid-connect: true
-    runs-on: atlas
+    runs-on: atlas-nix-trusted
     container: rust:bookworm
     steps:
       - name: Checkout
@@ -34,6 +28,13 @@ jobs:
         with:
           path: ~/.cargo/bin
           key: cargo-bin-${{ runner.os }}-${{ hashFiles('.forgejo/workflows/*.yaml') }}
+
+      - name: Verify compiler cache
+        run: |
+          set -eu
+          test -x /usr/local/bin/sccache
+          test -S /run/redis-sccache/redis.sock
+          /usr/local/bin/sccache --zero-stats
 
       - name: Validate signed release tag
         run: |
@@ -50,7 +51,7 @@ jobs:
           fi
 
           # cargo pkgid scopes the version lookup to the crate this workflow publishes.
-          version="$(cargo pkgid -p fragpipe | awk -F'[#@]' '{print $NF}')"
+          version="$(cargo pkgid -p fragpipe | awk -F'[#@]' 'NF > 1 {print $NF}' | tail -n 1)"
           if [ -z "$version" ]; then
             echo "Could not read package version from cargo pkgid" >&2
             exit 1
@@ -111,7 +112,7 @@ jobs:
               exit 1
             fi
           fi
-          if ! status="$(curl --retry 3 -sS -o /dev/null -w '%{http_code}' -A 'simit init-ci publish check' "https://crates.io/api/v1/crates/${crate_name}/${version}")"; then
+          if ! status="$(curl --retry 3 -sS -o /dev/null -w '%{http_code}' -A 'simit init ci publish check' "https://crates.io/api/v1/crates/${crate_name}/${version}")"; then
             status=000
           fi
           case "$status" in
@@ -132,3 +133,6 @@ jobs:
           fi
           export CARGO_REGISTRY_TOKEN="${CARGO_REGISTRY_TOKEN:-$CRATES_IO_API_TOKEN}"
           cargo publish
+      - name: Record compiler cache stats
+        if: always()
+        run: /usr/local/bin/sccache --show-adv-stats || true
