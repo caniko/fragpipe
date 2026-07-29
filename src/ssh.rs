@@ -96,7 +96,7 @@ pub fn stop_remote(config: &Config, remote: &RemotePeer, dry_run: bool) -> Resul
         &format!(
             "if test -s {pid}; then _fragpipe_pid=$(cat {pid}); pkill -P \"$_fragpipe_pid\" 2>/dev/null || true; kill \"$_fragpipe_pid\" 2>/dev/null || true; fi; rm -f {pid}; pkill -f {binary_pattern} 2>/dev/null || true; pkill -x {name} 2>/dev/null || true",
             pid = shell_quote(&remote_pid),
-            binary_pattern = shell_quote(&format!("^{remote_binary} ")),
+            binary_pattern = shell_quote(format!("^{remote_binary} ")),
             name = shell_quote(kill_name),
         ),
         dry_run,
