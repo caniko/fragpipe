@@ -45,6 +45,31 @@ Each non-dry run also preserves `logs/fragpipe/direct-1v1/run-NN/` with the
 local listener log, remote log tail, and JSON result report. Override this
 directory with `[direct].artifact_dir` when a project keeps evidence elsewhere.
 
+### Restricted SSH peers
+
+Set `restricted = true` on a remote that authenticates through an OpenSSH
+forced command. Restricted peers send typed lifecycle requests to
+`fragpipe ssh-gate`; rsync uploads are write-only, cannot delete, and remain
+inside the configured root.
+
+```toml
+[[remote]]
+name = "atlas"
+host = "regicide-atlas"
+remote_dir = "/var/lib/regicide-peer/fragpipe"
+restricted = true
+```
+
+The authorized key's forced command fixes every server-side path:
+
+```text
+restrict,command="fragpipe ssh-gate --root /var/lib/regicide-peer/fragpipe --binary chessbender-game --log-file game.log --pid-file .fragpipe.pid --rrsync /run/current-system/sw/bin/rrsync" ssh-ed25519 ...
+```
+
+Use an absolute path to the `rrsync` executable, not `rsync`. The gate rejects
+interactive shells, arbitrary commands, path traversal, forwarding, and
+unknown protocol fields.
+
 ## Android 1v1
 
 `android-1v1` starts a desktop listening peer and launches an Android joining
