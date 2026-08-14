@@ -7,6 +7,9 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use rustix::fd::OwnedFd;
+use rustix::io::Errno;
+use rustix::process::{Pid, PidfdFlags, Signal, pidfd_open, pidfd_send_signal};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{Config, RemotePeer, binary_file_name, project_root, resolve_path};
@@ -462,11 +465,6 @@ impl Gate {
         for pair in env {
             command.env(&pair.name, &pair.value);
         }
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt as _;
-            command.process_group(0);
-        }
         let mut child = command
             .spawn()
             .with_context(|| format!("failed to launch {}", self.binary.display()))?;
@@ -486,8 +484,8 @@ impl Gate {
         let Some(process) = self.read_pid()? else {
             return Ok(());
         };
-        if process.is_running()? {
-            signal_process_group(process.pid, "TERM")?;
+        if let Some(pidfd) = process.open_running()? {
+            signal_pidfd(&pidfd, Signal::TERM)?;
             for _ in 0..50 {
                 if !process.is_running()? {
                     break;
@@ -495,7 +493,7 @@ impl Gate {
                 thread::sleep(Duration::from_millis(100));
             }
             if process.is_running()? {
-                signal_process_group(process.pid, "KILL")?;
+                signal_pidfd(&pidfd, Signal::KILL)?;
                 for _ in 0..10 {
                     if !process.is_running()? {
                         break;
@@ -607,6 +605,20 @@ impl ProcessIdentity {
             Err(error) => Err(error),
         }
     }
+
+    fn open_running(self) -> Result<Option<OwnedFd>> {
+        let pid = Pid::from_raw(self.pid as i32).context("restricted PID is invalid")?;
+        let pidfd = match pidfd_open(pid, PidfdFlags::empty()) {
+            Ok(pidfd) => pidfd,
+            Err(Errno::SRCH) => return Ok(None),
+            Err(error) => return Err(error).context("failed to open restricted process handle"),
+        };
+        if self.is_running()? {
+            Ok(Some(pidfd))
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -670,17 +682,10 @@ fn process_state_and_start_time(pid: u32) -> Result<(char, u64)> {
     Ok((state, start_time))
 }
 
-fn signal_process_group(pid: u32, signal: &str) -> Result<()> {
-    let status = Command::new("kill")
-        .arg(format!("-{signal}"))
-        .arg("--")
-        .arg(format!("-{pid}"))
-        .status()
-        .context("failed to signal restricted process group")?;
-    if status.success() || !process_exists(pid) {
-        Ok(())
-    } else {
-        bail!("failed to signal restricted process group {pid}: {status}")
+fn signal_pidfd(pidfd: &OwnedFd, signal: Signal) -> Result<()> {
+    match pidfd_send_signal(pidfd, signal) {
+        Ok(()) | Err(Errno::SRCH) => Ok(()),
+        Err(error) => Err(error).context("failed to signal restricted process"),
     }
 }
 
@@ -1017,7 +1022,7 @@ mod tests {
         )
         .unwrap();
         let binary = root.join("game");
-        fs::write(&binary, "#!/bin/sh\necho started\nsleep 30\n").unwrap();
+        fs::write(&binary, "#!/bin/sh\necho started\nexec sleep 30\n").unwrap();
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
 
         gate.launch(&[], &[]).unwrap();
