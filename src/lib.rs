@@ -52,6 +52,32 @@ enum Commands {
     /// Validate Android SDK/adb/APK/manifest prerequisites.
     #[command(name = "android-doctor")]
     AndroidDoctor(AndroidDoctorArgs),
+    /// Receive restricted SSH lifecycle and rsync requests from a forced command.
+    #[command(name = "ssh-gate", hide = true)]
+    SshGate(SshGateArgs),
+}
+
+#[derive(Debug, Parser)]
+struct SshGateArgs {
+    /// Fixed directory containing every file the key may access.
+    #[arg(long)]
+    root: PathBuf,
+
+    /// Fixed executable path relative to root.
+    #[arg(long)]
+    binary: PathBuf,
+
+    /// Fixed log path relative to root.
+    #[arg(long, default_value = "game.log")]
+    log_file: PathBuf,
+
+    /// Fixed PID path relative to root.
+    #[arg(long, default_value = ".fragpipe.pid")]
+    pid_file: PathBuf,
+
+    /// Absolute path to the restricted rsync wrapper.
+    #[arg(long)]
+    rrsync: PathBuf,
 }
 
 #[derive(Debug, Parser)]
@@ -462,6 +488,13 @@ pub fn run(cli: Cli) -> Result<()> {
             adb_serial: args.adb_serial,
             device: args.device,
         }),
+        Commands::SshGate(args) => ssh::run_gate(
+            &args.root,
+            &args.binary,
+            &args.log_file,
+            &args.pid_file,
+            &args.rrsync,
+        ),
     }
 }
 
@@ -683,6 +716,22 @@ mod tests {
     fn parse_ship_subcommand() {
         let cli = Cli::try_parse_from(["fragpipe", "ship", "--remote", "test-peer"]).unwrap();
         assert!(matches!(cli.command, Commands::Ship(_)));
+    }
+
+    #[test]
+    fn parse_hidden_ssh_gate_subcommand() {
+        let cli = Cli::try_parse_from([
+            "fragpipe",
+            "ssh-gate",
+            "--root",
+            "/srv/game",
+            "--binary",
+            "game",
+            "--rrsync",
+            "/run/current-system/sw/bin/rrsync",
+        ])
+        .unwrap();
+        assert!(matches!(cli.command, Commands::SshGate(_)));
     }
 
     #[test]

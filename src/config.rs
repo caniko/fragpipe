@@ -277,6 +277,8 @@ pub struct RemotePeer {
     pub name: String,
     pub host: String,
     pub remote_dir: String,
+    #[serde(default)]
+    pub restricted: bool,
     #[serde(default = "default_remote_log")]
     pub log_file: String,
     #[serde(default = "default_remote_pid_file")]
@@ -714,6 +716,24 @@ mod tests {
         .unwrap();
         assert_eq!(config.remote[0].log_file, "game.log");
         assert_eq!(config.remote[0].pid_file, ".fragpipe.pid");
+        assert!(!config.remote[0].restricted);
+    }
+
+    #[test]
+    fn remote_peer_parses_restricted_transport() {
+        let config: Config = toml::from_str(
+            r#"
+            [game]
+            binary = "game"
+            [[remote]]
+            name = "peer"
+            host = "host"
+            remote_dir = "/remote"
+            restricted = true
+            "#,
+        )
+        .unwrap();
+        assert!(config.remote[0].restricted);
     }
 
     #[test]
