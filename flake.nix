@@ -2,7 +2,7 @@
   description = "Bare-metal multiplayer and Android device test orchestration";
 
   inputs = {
-    rs-harbor.url = "git+https://codefloe.com/caniko/rs-harbor.git?ref=trunk&rev=7fa1c2104dab4e1dbaa1aaa6df84bba815aa282d";
+    rs-harbor.url = "git+ssh://git@codeberg.org/caniko/rs-harbor.git?ref=trunk&rev=f209ddbca3fdbb0dc31fa3886ccc2ff7369c18ac";
 
     nixpkgs.follows = "rs-harbor/nixpkgs";
     rust-overlay.follows = "rs-harbor/rust-overlay";
@@ -14,7 +14,7 @@
     # downstream consumers reach steampipe THROUGH fragpipe rather than
     # depending on it directly.
     steampipe = {
-      url = "git+https://codefloe.com/caniko/steampipe.git";
+      url = "git+ssh://git@codeberg.org/caniko/steampipe.git";
       inputs.rs-harbor.follows = "rs-harbor";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.rust-overlay.follows = "rust-overlay";
