@@ -217,13 +217,22 @@ fn run_rsync(
     if dry_run {
         return Ok(());
     }
+    let source = rsync_source_arg(&resolved);
     let status = Command::new("rsync")
         .arg("-az")
-        .arg(&resolved)
+        .arg(&source)
         .arg(format!("{}:{target}", remote.host))
         .status()
         .context("failed to run rsync")?;
     ensure_success(status, "rsync")
+}
+
+fn rsync_source_arg(resolved: &Path) -> String {
+    if resolved.is_dir() {
+        format!("{}/", resolved.display())
+    } else {
+        resolved.display().to_string()
+    }
 }
 
 fn remote_binary_name(config: &Config, remote: &RemotePeer) -> Result<String> {
@@ -720,6 +729,15 @@ mod tests {
             env: vec![],
             join_args: vec![],
         }
+    }
+
+    #[test]
+    fn rsync_source_arg_appends_slash_for_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file.bin");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(rsync_source_arg(dir.path()).ends_with('/'));
+        assert!(!rsync_source_arg(&file).ends_with('/'));
     }
 
     #[test]
