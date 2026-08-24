@@ -2,7 +2,7 @@
   description = "Bare-metal multiplayer and Android device test orchestration";
 
   inputs = {
-    harbor-rs.url = "git+ssh://git@github.com/caniko/harbor-rs.git?ref=trunk&rev=05cc4f162b55fa904b687db1821e2463fa813e50";
+    harbor-rs.url = "git+ssh://git@github.com/caniko/harbor-rs.git?ref=trunk&rev=a49c2554bda4e54af86c2a86dc4330f0ca3df6cf";
     rs-harbor.follows = "harbor-rs";
 
     nixpkgs.follows = "harbor-rs/nixpkgs";
