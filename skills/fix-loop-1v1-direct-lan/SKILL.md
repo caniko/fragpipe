@@ -8,8 +8,11 @@ description: Run repeated physical-peer LAN/UDP 1v1 games through Fragpipe until
 Use the `fragpipe` binary from the project checkout:
 
 ```bash
-fragpipe direct-1v1 --config fragpipe.toml --remote <peer> --headless --max-runs 1 --timeout 300
+fragpipe direct-1v1 --config fragpipe.toml --remote <peer> --max-runs 1 --timeout 300
 ```
+
+Graphical atlas-nomad omits `--headless` and uses `--remote nomad` (UDP `27100`, the open direct-link port).
+`--headless` is only for a non-graphical direct run.
 
 The configured remote must be reachable over SSH and the host must be the
 peer's direct-link address. The runner deploys the built binary and assets,
