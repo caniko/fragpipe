@@ -663,47 +663,36 @@ pub struct AndroidUiRunOptions {
     pub output_format: OutputFormat,
 }
 
-/// Stable semantic fixture names understood by the Android visual harness.
-///
-/// The list is deliberately explicit so `--visual-fixtures all` cannot drift
-/// when a producer adds an unrelated debug screen.
-pub const ANDROID_VISUAL_FIXTURES: &[&str] = &[
-    "main_menu",
-    "settings",
-    "game_browser",
-    "quick_match",
-    "host_lobby",
-    "awaiting_room",
-    "chat",
-    "battle_hud",
-    "tactics_draft",
-    "board_formation",
-    "game_over",
-    "android_steam_unavailable",
-];
-
-fn select_android_visual_fixtures(spec: Option<&str>) -> Result<Vec<String>> {
+fn select_android_visual_fixtures(catalog: &[String], spec: Option<&str>) -> Result<Vec<String>> {
+    if catalog.is_empty() {
+        bail!("android.visual_fixtures is empty; set the project fixture catalog");
+    }
     let Some(spec) = spec else {
-        return Ok(vec!["main_menu".to_owned()]);
+        return Ok(vec![catalog[0].clone()]);
     };
     if spec == "all" {
-        return Ok(ANDROID_VISUAL_FIXTURES
-            .iter()
-            .map(|fixture| (*fixture).to_owned())
-            .collect());
+        return Ok(catalog.to_vec());
     }
-    let selected = ANDROID_VISUAL_FIXTURES
+    let selected = catalog
         .iter()
         .filter(|fixture| wildcard_matches(spec, fixture))
-        .map(|fixture| (*fixture).to_owned())
+        .cloned()
         .collect::<Vec<_>>();
     if selected.is_empty() {
         bail!(
             "android visual fixture glob {spec:?} matched none; available: {}",
-            ANDROID_VISUAL_FIXTURES.join(", ")
+            catalog.join(", ")
         );
     }
     Ok(selected)
+}
+
+fn expand_image_validator(template: &[String], path: &Path, fixture: &str) -> Vec<String> {
+    let image = path.to_string_lossy();
+    template
+        .iter()
+        .map(|arg| arg.replace("{image}", &image).replace("{fixture}", fixture))
+        .collect()
 }
 
 fn wildcard_matches(pattern: &str, value: &str) -> bool {
@@ -843,7 +832,10 @@ pub fn run_android_ui(options: AndroidUiRunOptions) -> Result<()> {
 
     let max_runs = options.max_runs.unwrap_or(config.webrtc.max_runs);
     let timeout = Duration::from_secs(options.timeout_secs.unwrap_or(60));
-    let fixtures = select_android_visual_fixtures(options.visual_fixtures.as_deref())?;
+    let fixtures = select_android_visual_fixtures(
+        &android_cfg.visual_fixtures,
+        options.visual_fixtures.as_deref(),
+    )?;
 
     if !options.no_build {
         run_build(&config, options.dry_run)?;
@@ -1106,21 +1098,30 @@ fn run_one_android_ui(
 
         let started = Instant::now();
         let fixture_ready_marker = format!("ANDROID_VISUAL_FIXTURE_READY:{fixture}");
+        let mut ready = false;
         loop {
             let logcat_text = read_lossy(&android_cfg.logcat_log);
+            if logcat_text.contains("FATAL EXCEPTION")
+                && logcat_text.contains(&format!("Process: {}", android_cfg.package_name))
+            {
+                bail!("android UI app crashed");
+            }
             if let Some(label) = classify_non_success_log(&config.process, &logcat_text) {
                 bail!("android UI app reported {label}");
             }
-            if started.elapsed() >= Duration::from_secs(5) {
-                if !logcat_text.contains(&fixture_ready_marker) {
+            ready |= logcat_text.contains(&fixture_ready_marker);
+            if ready && started.elapsed() >= Duration::from_secs(5) {
+                android::capture_screenshot(android_cfg, &screenshot_path, false)?;
+                validate_android_image(config, android_cfg, &screenshot_path, fixture)?;
+                return Ok(format!("LANDSCAPE_SCREENSHOT:{fixture}"));
+            }
+            if started.elapsed() > timeout {
+                let _ = android::capture_screenshot(android_cfg, &screenshot_path, false);
+                if !ready {
                     bail!(
                         "android UI app did not acknowledge visual fixture {fixture} with {fixture_ready_marker}"
                     );
                 }
-                android::capture_screenshot(android_cfg, &screenshot_path, false)?;
-                return Ok(format!("LANDSCAPE_SCREENSHOT:{fixture}"));
-            }
-            if started.elapsed() > timeout {
                 bail!(
                     "timed out after {}s waiting for android UI screenshot",
                     timeout.as_secs()
@@ -1150,6 +1151,33 @@ fn run_one_android_ui(
         ],
     )?;
     Ok(report)
+}
+
+fn validate_android_image(
+    config: &Config,
+    android_cfg: &AndroidConfig,
+    path: &Path,
+    fixture: &str,
+) -> Result<()> {
+    let Some(template) = android_cfg.image_validator.as_deref() else {
+        return Ok(());
+    };
+    if template.is_empty() {
+        return Ok(());
+    }
+    let args = expand_image_validator(template, path, fixture);
+    let (program, rest) = args
+        .split_first()
+        .expect("image_validator is non-empty after the empty check");
+    let status = Command::new(program)
+        .args(rest)
+        .current_dir(project_root(config))
+        .status()
+        .with_context(|| format!("run image validator {program} after android screencap"))?;
+    if !status.success() {
+        bail!("android image audit failed for {fixture}: {status}");
+    }
+    Ok(())
 }
 
 fn apply_android_overrides(cfg: &mut AndroidConfig, adb_serial: Option<String>, device: bool) {
@@ -1352,11 +1380,27 @@ mod tests {
 
     #[test]
     fn android_visual_fixture_catalog_supports_all_and_globs() {
-        let all = select_android_visual_fixtures(Some("all")).unwrap();
-        assert_eq!(all.len(), ANDROID_VISUAL_FIXTURES.len());
-        let battle = select_android_visual_fixtures(Some("battle_*")).unwrap();
+        let catalog = vec!["main_menu".into(), "battle_hud".into(), "game_over".into()];
+        let all = select_android_visual_fixtures(&catalog, Some("all")).unwrap();
+        assert_eq!(all, catalog);
+        let battle = select_android_visual_fixtures(&catalog, Some("battle_*")).unwrap();
         assert_eq!(battle, vec!["battle_hud"]);
-        assert!(select_android_visual_fixtures(Some("missing*")).is_err());
+        assert!(select_android_visual_fixtures(&catalog, Some("missing*")).is_err());
+        assert_eq!(
+            select_android_visual_fixtures(&catalog, None).unwrap(),
+            vec!["main_menu"]
+        );
+        assert!(select_android_visual_fixtures(&[], Some("all")).is_err());
+    }
+
+    #[test]
+    fn expand_image_validator_replaces_tokens() {
+        let args = expand_image_validator(
+            &["check".into(), "{image}".into(), "{fixture}".into()],
+            Path::new("/tmp/shot.png"),
+            "main_menu",
+        );
+        assert_eq!(args, vec!["check", "/tmp/shot.png", "main_menu"]);
     }
 
     #[test]
@@ -1483,6 +1527,8 @@ mod tests {
             ui_activity_name: Some("UiActivity".into()),
             ui_log_tag: Some("UI_TAG".into()),
             ui_apk_build_command: Some("build-ui".into()),
+            visual_fixtures: vec![],
+            image_validator: None,
             package_name: "com.original.pkg".into(),
             activity_name: "OriginalActivity".into(),
             log_tag: "original".into(),
@@ -1586,6 +1632,8 @@ mod tests {
             ui_activity_name: None,
             ui_log_tag: None,
             ui_apk_build_command: None,
+            visual_fixtures: vec![],
+            image_validator: None,
             package_name: "com.test".into(),
             activity_name: "TestActivity".into(),
             log_tag: "test".into(),

@@ -228,12 +228,21 @@ pub struct AndroidConfig {
     /// Optional command to build/stage the full-app APK before `android-ui`.
     #[serde(default)]
     pub ui_apk_build_command: Option<String>,
-    /// Application package name (e.g. `tartanoglu.chessbender.test_peer`).
+    /// Explicit fixture catalog for `android-ui --visual-fixtures`.
+    #[serde(default)]
+    pub visual_fixtures: Vec<String>,
+    /// Optional argv template run after each screenshot.
+    ///
+    /// Tokens `{image}` and `{fixture}` are replaced in each argument.
+    /// When unset, screenshot capture still succeeds.
+    #[serde(default)]
+    pub image_validator: Option<Vec<String>>,
+    /// Application package name.
     pub package_name: String,
     /// Fully-qualified activity name (e.g. `androidx.games.activity.GameActivity`).
     #[serde(default = "default_android_activity")]
     pub activity_name: String,
-    /// Logcat tag the test-peer logs under (defaults to `chessbender`).
+    /// Logcat tag the test-peer logs under (defaults to `game`).
     #[serde(default = "default_android_log_tag")]
     pub log_tag: String,
     /// Path on the emulator where the listener's join address gets pushed.
@@ -419,11 +428,11 @@ fn default_android_avd_name() -> String {
 }
 
 fn default_android_log_tag() -> String {
-    "chessbender".into()
+    "game".into()
 }
 
 fn default_android_rendezvous_path() -> String {
-    "/data/local/tmp/chessbender-rendezvous.txt".into()
+    "/data/local/tmp/fragpipe-rendezvous.txt".into()
 }
 
 fn default_android_log() -> PathBuf {
@@ -445,7 +454,7 @@ fn default_android_boot_timeout_secs() -> u64 {
 }
 
 fn default_android_launch_config_path() -> String {
-    "/data/local/tmp/chessbender-launch.json".into()
+    "/data/local/tmp/fragpipe-launch.json".into()
 }
 
 fn default_android_screenshot_dir() -> PathBuf {
@@ -791,7 +800,34 @@ mod tests {
         assert_eq!(android.avd_name, "Test_AVD");
         assert_eq!(android.adb_serial.as_deref(), Some("emulator-5554"));
         assert_eq!(android.boot_timeout_secs, 120);
+        assert!(android.visual_fixtures.is_empty());
+        assert!(android.image_validator.is_none());
         assert_eq!(config.remote.len(), 1);
         assert_eq!(config.remote[0].binary_name.as_deref(), Some("remote-bin"));
+    }
+
+    #[test]
+    fn android_visual_fields_deserialize() {
+        let config: Config = toml::from_str(
+            r#"
+            [game]
+            binary = "game"
+            [android]
+            apk_path = "/apk"
+            package_name = "com.test"
+            visual_fixtures = ["main_menu", "battle_hud"]
+            image_validator = ["check", "{image}", "{fixture}"]
+            "#,
+        )
+        .unwrap();
+        let android = config.android.as_ref().unwrap();
+        assert_eq!(
+            android.visual_fixtures,
+            vec!["main_menu".to_string(), "battle_hud".to_string()]
+        );
+        assert_eq!(
+            android.image_validator,
+            Some(vec!["check".into(), "{image}".into(), "{fixture}".into()])
+        );
     }
 }

@@ -7,9 +7,7 @@
 //!   3. `push_rendezvous` — write the listener's WebRTC multiaddr to
 //!      `rendezvous_path` on the device so the test-peer can read it on start.
 //!   4. `start_activity` — `am start -n <pkg>/<activity>` to launch the
-//!      test-peer. The activity loads `libchessbender_android_test_peer.so`
-//!      via `android:lib_name`; `bevy_main` enters `android_main` which reads
-//!      the rendezvous file.
+//!      test-peer. The activity reads the rendezvous file on start.
 //!   5. `tail_logcat` — spawn `adb logcat -s <tag>` redirected into the
 //!      configured log file so `classify_log` sees the same pass/fatal
 //!      markers it sees from the desktop peer.
@@ -201,6 +199,17 @@ impl<'a> AndroidDevice<'a> {
         if !status.success() {
             bail!("adb push exited with {status}");
         }
+        let chmod = self
+            .adb_command()?
+            .arg("shell")
+            .arg("chmod")
+            .arg("644")
+            .arg(device_path)
+            .status()
+            .with_context(|| format!("adb chmod failed at {adb}"))?;
+        if !chmod.success() {
+            bail!("adb chmod 644 {device_path} exited with {chmod}");
+        }
         Ok(())
     }
 
@@ -239,7 +248,7 @@ impl<'a> AndroidDevice<'a> {
         }
         let _ = std::fs::remove_file(&self.cfg.logcat_log);
         println!(
-            "[android] {} logcat -s {}:V → {}",
+            "[android] {} logcat -s {}:V *:I → {}",
             adb,
             self.cfg.log_tag,
             self.cfg.logcat_log.display()
@@ -256,7 +265,7 @@ impl<'a> AndroidDevice<'a> {
             .context("failed to dup logcat log file handle")?;
         let child = self
             .adb_command()?
-            .args(["logcat", "-s", &format!("{}:V", self.cfg.log_tag), "*:E"])
+            .args(["logcat", "-s", &format!("{}:V", self.cfg.log_tag), "*:I"])
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(stderr_file))
             .spawn()
@@ -363,27 +372,12 @@ pub fn push_rendezvous(cfg: &AndroidConfig, contents: &str, dry_run: bool) -> Re
     AndroidDevice::new(cfg).push_file(&cfg.rendezvous_path, contents, "rendezvous", dry_run)
 }
 
-pub const CANONICAL_VISUAL_LAUNCH_CONFIG_PATH: &str = "/data/local/tmp/chessbender-launch.json";
-
 pub fn push_launch_config(cfg: &AndroidConfig, contents: &str, dry_run: bool) -> Result<()> {
     AndroidDevice::new(cfg).push_file(&cfg.launch_config_path, contents, "launch config", dry_run)
 }
 
-/// Push a UI fixture request to the path consumed by the game, even when a
-/// project overrides the generic launch-config path for another Android test.
-/// The configured path is retained for existing consumers; the canonical copy
-/// makes visual fixture selection deterministic across profiles.
 pub fn push_visual_launch_config(cfg: &AndroidConfig, contents: &str, dry_run: bool) -> Result<()> {
-    push_launch_config(cfg, contents, dry_run)?;
-    if cfg.launch_config_path != CANONICAL_VISUAL_LAUNCH_CONFIG_PATH {
-        AndroidDevice::new(cfg).push_file(
-            CANONICAL_VISUAL_LAUNCH_CONFIG_PATH,
-            contents,
-            "visual launch config",
-            dry_run,
-        )?;
-    }
-    Ok(())
+    push_launch_config(cfg, contents, dry_run)
 }
 
 pub fn start_activity(cfg: &AndroidConfig, dry_run: bool) -> Result<()> {
@@ -466,10 +460,12 @@ mod tests {
             ui_activity_name: None,
             ui_log_tag: None,
             ui_apk_build_command: None,
-            package_name: "tartanoglu.chessbender.test_peer".into(),
+            visual_fixtures: vec![],
+            image_validator: None,
+            package_name: "com.example.test_peer".into(),
             activity_name: "androidx.games.activity.GameActivity".into(),
-            log_tag: "chessbender".into(),
-            rendezvous_path: "/data/local/tmp/chessbender-rendezvous.txt".into(),
+            log_tag: "game".into(),
+            rendezvous_path: "/data/local/tmp/fragpipe-rendezvous.txt".into(),
             logcat_log: PathBuf::from("logs/fragpipe-android-test.log"),
             emulator_bin: if overrides {
                 Some(PathBuf::from("/usr/bin/emulator"))
@@ -483,17 +479,9 @@ mod tests {
             },
             emulator_args: vec!["-no-window".into(), "-no-audio".into()],
             boot_timeout_secs: 120,
-            launch_config_path: "/data/local/tmp/chessbender-launch.json".into(),
+            launch_config_path: "/data/local/tmp/fragpipe-launch.json".into(),
             screenshot_dir: PathBuf::from("logs/fragpipe-android-screenshots"),
         }
-    }
-
-    #[test]
-    fn canonical_visual_launch_path_matches_default_profile() {
-        assert_eq!(
-            cfg(false).launch_config_path,
-            CANONICAL_VISUAL_LAUNCH_CONFIG_PATH
-        );
     }
 
     #[test]
