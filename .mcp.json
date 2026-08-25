@@ -3,7 +3,7 @@
     "fragpipe": {
       "type": "stdio",
       "command": "nix",
-      "args": ["run", "git+ssh://git@codeberg.org/caniko/fragpipe.git#fragpipe-mcp"]
+      "args": ["run", "git+ssh://git@github.com/caniko/fragpipe.git#fragpipe-mcp"]
     }
   }
 }
