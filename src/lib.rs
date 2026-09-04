@@ -1,4 +1,5 @@
 pub mod android;
+pub mod android_worker;
 pub mod config;
 pub mod direct;
 pub mod logwatch;
@@ -14,7 +15,10 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 
-use direct::{DirectRunOptions, OutputFormat as DirectOutputFormat, run_direct_1v1};
+use direct::{
+    DirectRunOptions, OutputFormat as DirectOutputFormat, TournamentRunOptions, run_direct_1v1,
+    run_direct_tournament,
+};
 use runner::{
     AndroidDoctorOptions, AndroidRunOptions, AndroidUiRunOptions, InternetRunOptions, OutputFormat,
     ShipOptions, WebRtcRunOptions, run_android_1v1, run_android_doctor, run_android_ui,
@@ -40,6 +44,9 @@ enum Commands {
     /// Run a physical-peer LAN/UDP 1v1 smoke test through SSH.
     #[command(name = "direct-1v1")]
     Direct1v1(Direct1v1Args),
+    /// Run a multi-process physical-peer LAN tournament through SSH.
+    #[command(name = "direct-tournament")]
+    DirectTournament(DirectTournamentArgs),
     /// Run the forced-relay internet 1v1 smoke test.
     #[command(name = "internet-1v1")]
     Internet1v1(Internet1v1Args),
@@ -52,6 +59,9 @@ enum Commands {
     /// Validate Android SDK/adb/APK/manifest prerequisites.
     #[command(name = "android-doctor")]
     AndroidDoctor(AndroidDoctorArgs),
+    /// Lease remote Android slots and run a local command against their ADB server.
+    #[command(name = "android-with")]
+    AndroidWith(AndroidWithArgs),
     /// Receive restricted SSH lifecycle and rsync requests from a forced command.
     #[command(name = "ssh-gate", hide = true)]
     SshGate(SshGateArgs),
@@ -265,6 +275,49 @@ struct Direct1v1Args {
 }
 
 #[derive(Debug, Parser)]
+struct DirectTournamentArgs {
+    /// Project config path.
+    #[arg(long, default_value = "fragpipe.toml")]
+    config: PathBuf,
+
+    /// Remote peer name from the config.
+    #[arg(long, required = true)]
+    remote: String,
+
+    /// Number of test runs.
+    #[arg(long)]
+    max_runs: Option<u32>,
+
+    /// Per-run timeout in seconds.
+    #[arg(long)]
+    timeout: Option<u64>,
+
+    /// Stop after the first failed run.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    stop_on_failure: bool,
+
+    /// Skip the configured build command.
+    #[arg(long)]
+    no_build: bool,
+
+    /// Skip binary/assets deployment.
+    #[arg(long)]
+    no_deploy: bool,
+
+    /// Reachable local IP the remote peers should dial.
+    #[arg(long)]
+    local_ip: Option<IpAddr>,
+
+    /// Print commands without launching or SSHing.
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Output format.
+    #[arg(long, default_value = "text")]
+    output_format: CliOutputFormat,
+}
+
+#[derive(Debug, Parser)]
 struct Android1v1Args {
     /// Project config path.
     #[arg(long, default_value = "fragpipe.toml")]
@@ -312,6 +365,14 @@ struct Android1v1Args {
     #[arg(long)]
     device: bool,
 
+    /// Named remote Android slot from the worker config.
+    #[arg(long)]
+    slot: Option<String>,
+
+    /// Android worker config path. Defaults to $XDG_CONFIG_HOME/fragpipe/workers.toml.
+    #[arg(long)]
+    workers_config: Option<PathBuf>,
+
     /// Output format.
     #[arg(long, default_value = "text")]
     output_format: CliOutputFormat,
@@ -351,6 +412,14 @@ struct AndroidUiArgs {
     #[arg(long)]
     device: bool,
 
+    /// Named remote Android slot from the worker config.
+    #[arg(long)]
+    slot: Option<String>,
+
+    /// Android worker config path. Defaults to $XDG_CONFIG_HOME/fragpipe/workers.toml.
+    #[arg(long)]
+    workers_config: Option<PathBuf>,
+
     /// JSON launch config pushed to the Android device before starting.
     #[arg(long)]
     launch_config: Option<String>,
@@ -381,6 +450,33 @@ struct AndroidDoctorArgs {
     /// Use a physical device instead of requiring the configured AVD.
     #[arg(long)]
     device: bool,
+
+    /// Named remote Android slot from the worker config.
+    #[arg(long)]
+    slot: Option<String>,
+
+    /// Android worker config path. Defaults to $XDG_CONFIG_HOME/fragpipe/workers.toml.
+    #[arg(long)]
+    workers_config: Option<PathBuf>,
+}
+
+#[derive(Debug, Parser)]
+struct AndroidWithArgs {
+    /// Named Android slots. Multiple slots must belong to one worker.
+    #[arg(long, required = true)]
+    slot: Vec<String>,
+
+    /// Android worker config path. Defaults to $XDG_CONFIG_HOME/fragpipe/workers.toml.
+    #[arg(long)]
+    workers_config: Option<PathBuf>,
+
+    /// Print lifecycle actions without SSHing or running the command.
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Command to run with the leased ADB server and serial environment.
+    #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+    command: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -440,6 +536,21 @@ pub fn run(cli: Cli) -> Result<()> {
             },
             transport: Some(args.transport),
         }),
+        Commands::DirectTournament(args) => run_direct_tournament(TournamentRunOptions {
+            config_path: args.config,
+            remote: args.remote,
+            max_runs: args.max_runs,
+            timeout_secs: args.timeout,
+            stop_on_failure: args.stop_on_failure,
+            no_build: args.no_build,
+            no_deploy: args.no_deploy,
+            local_ip: args.local_ip,
+            dry_run: args.dry_run,
+            output_format: match args.output_format {
+                CliOutputFormat::Text => DirectOutputFormat::Text,
+                CliOutputFormat::Jsonl => DirectOutputFormat::Jsonl,
+            },
+        }),
         Commands::Internet1v1(args) => run_internet_1v1(InternetRunOptions {
             config_path: args.config,
             max_runs: args.max_runs,
@@ -466,6 +577,8 @@ pub fn run(cli: Cli) -> Result<()> {
             dry_run: args.dry_run,
             adb_serial: args.adb_serial,
             device: args.device,
+            slot: args.slot,
+            workers_config: args.workers_config,
             launch_config: None,
             output_format: args.output_format.into(),
         }),
@@ -479,6 +592,8 @@ pub fn run(cli: Cli) -> Result<()> {
             dry_run: args.dry_run,
             adb_serial: args.adb_serial,
             device: args.device,
+            slot: args.slot,
+            workers_config: args.workers_config,
             launch_config: args.launch_config,
             visual_fixtures: args.visual_fixtures,
             output_format: args.output_format.into(),
@@ -487,7 +602,15 @@ pub fn run(cli: Cli) -> Result<()> {
             config_path: args.config,
             adb_serial: args.adb_serial,
             device: args.device,
+            slot: args.slot,
+            workers_config: args.workers_config,
         }),
+        Commands::AndroidWith(args) => android_worker::run_android_with(
+            args.workers_config.as_deref(),
+            &args.slot,
+            &args.command,
+            args.dry_run,
+        ),
         Commands::SshGate(args) => ssh::run_gate(
             &args.root,
             &args.binary,
@@ -572,6 +695,40 @@ mod tests {
     }
 
     #[test]
+    fn direct_tournament_forwards_flags() {
+        let cli = Cli::try_parse_from([
+            "fragpipe",
+            "direct-tournament",
+            "--remote",
+            "nomad",
+            "--max-runs",
+            "3",
+            "--timeout",
+            "600",
+            "--no-build",
+            "--no-deploy",
+            "--local-ip",
+            "10.10.0.1",
+            "--dry-run",
+            "--output-format",
+            "jsonl",
+        ])
+        .unwrap();
+        if let Commands::DirectTournament(args) = cli.command {
+            assert_eq!(args.remote, "nomad");
+            assert_eq!(args.max_runs, Some(3));
+            assert_eq!(args.timeout, Some(600));
+            assert!(args.no_build);
+            assert!(args.no_deploy);
+            assert_eq!(args.local_ip, Some("10.10.0.1".parse().unwrap()));
+            assert!(args.dry_run);
+            assert!(matches!(args.output_format, CliOutputFormat::Jsonl));
+        } else {
+            panic!("expected DirectTournament variant");
+        }
+    }
+
+    #[test]
     fn parse_android_1v1_subcommand() {
         let cli = Cli::try_parse_from(["fragpipe", "android-1v1"]).unwrap();
         assert!(matches!(cli.command, Commands::Android1v1(_)));
@@ -587,6 +744,27 @@ mod tests {
     fn parse_android_doctor_subcommand() {
         let cli = Cli::try_parse_from(["fragpipe", "android-doctor"]).unwrap();
         assert!(matches!(cli.command, Commands::AndroidDoctor(_)));
+    }
+
+    #[test]
+    fn android_with_parses_multiple_slots_and_command() {
+        let cli = Cli::try_parse_from([
+            "fragpipe",
+            "android-with",
+            "--slot",
+            "nomad-aosp35-0",
+            "--slot",
+            "nomad-aosp35-1",
+            "--",
+            "scripts/emulator-conformance.sh",
+            "full",
+        ])
+        .unwrap();
+        let Commands::AndroidWith(args) = cli.command else {
+            panic!("expected AndroidWith variant");
+        };
+        assert_eq!(args.slot, ["nomad-aosp35-0", "nomad-aosp35-1"]);
+        assert_eq!(args.command, ["scripts/emulator-conformance.sh", "full"]);
     }
 
     #[test]
@@ -680,6 +858,8 @@ mod tests {
             "--device",
             "--adb-serial",
             "emulator-5554",
+            "--slot",
+            "nomad-aosp35-0",
             "--no-install",
             "--dry-run",
         ])
@@ -687,6 +867,7 @@ mod tests {
         if let Commands::Android1v1(args) = cli.command {
             assert!(args.device);
             assert_eq!(args.adb_serial, Some("emulator-5554".into()));
+            assert_eq!(args.slot, Some("nomad-aosp35-0".into()));
             assert!(args.no_install);
             assert!(args.dry_run);
         } else {

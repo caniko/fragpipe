@@ -78,6 +78,14 @@ impl<'a> AndroidDevice<'a> {
     fn adb_command(&self) -> Result<Command> {
         let adb = adb_bin(self.cfg)?;
         let mut cmd = Command::new(adb);
+        if let Some(host) = self.cfg.adb_host.as_deref() {
+            cmd.arg("-H").arg(host);
+            if let Some(port) = self.cfg.adb_port {
+                cmd.arg("-P").arg(port.to_string());
+            }
+        } else if self.cfg.adb_port.is_some() {
+            bail!("android adb_port requires adb_host");
+        }
         if let Some(serial) = self.cfg.adb_serial.as_deref() {
             cmd.arg("-s").arg(serial);
         }
@@ -87,6 +95,16 @@ impl<'a> AndroidDevice<'a> {
     fn adb_display(&self) -> Result<String> {
         let adb = adb_bin(self.cfg)?;
         let mut display = adb.display().to_string();
+        if let Some(host) = self.cfg.adb_host.as_deref() {
+            display.push_str(" -H ");
+            display.push_str(host);
+            if let Some(port) = self.cfg.adb_port {
+                display.push_str(" -P ");
+                display.push_str(&port.to_string());
+            }
+        } else if self.cfg.adb_port.is_some() {
+            bail!("android adb_port requires adb_host");
+        }
         if let Some(serial) = self.cfg.adb_serial.as_deref() {
             display.push_str(" -s ");
             display.push_str(serial);
@@ -316,6 +334,9 @@ pub fn prepare_target(cfg: &AndroidConfig, dry_run: bool) -> Result<Option<Child
     match cfg.target {
         AndroidTarget::Emulator => boot_emulator(cfg, dry_run),
         AndroidTarget::Device => {
+            if dry_run {
+                return Ok(None);
+            }
             AndroidDevice::new(cfg)
                 .wait_until_booted(Duration::from_secs(cfg.boot_timeout_secs))?;
             Ok(None)
@@ -459,6 +480,8 @@ mod tests {
             target: AndroidTarget::Emulator,
             avd_name: "fragpipe_test".into(),
             adb_serial: None,
+            adb_host: None,
+            adb_port: None,
             apk_path: PathBuf::from("/tmp/fragpipe-test.apk"),
             apk_build_command: None,
             ui_apk_path: None,
@@ -520,6 +543,23 @@ mod tests {
     fn adb_bin_honors_override() {
         let cfg = cfg(true);
         assert_eq!(adb_bin(&cfg).unwrap(), PathBuf::from("/usr/bin/adb"));
+    }
+
+    #[test]
+    fn adb_command_targets_tunneled_server_before_serial() {
+        let mut config = cfg(true);
+        config.adb_host = Some("127.0.0.1".into());
+        config.adb_port = Some(15037);
+        config.adb_serial = Some("emulator-5554".into());
+        let command = AndroidDevice::new(&config).adb_command().unwrap();
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args,
+            ["-H", "127.0.0.1", "-P", "15037", "-s", "emulator-5554"]
+        );
     }
 
     #[test]

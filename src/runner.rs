@@ -644,6 +644,8 @@ pub struct AndroidRunOptions {
     pub dry_run: bool,
     pub adb_serial: Option<String>,
     pub device: bool,
+    pub slot: Option<String>,
+    pub workers_config: Option<PathBuf>,
     pub launch_config: Option<String>,
     pub output_format: OutputFormat,
 }
@@ -658,6 +660,8 @@ pub struct AndroidUiRunOptions {
     pub dry_run: bool,
     pub adb_serial: Option<String>,
     pub device: bool,
+    pub slot: Option<String>,
+    pub workers_config: Option<PathBuf>,
     pub launch_config: Option<String>,
     pub visual_fixtures: Option<String>,
     pub output_format: OutputFormat,
@@ -739,6 +743,8 @@ pub struct AndroidDoctorOptions {
     pub config_path: PathBuf,
     pub adb_serial: Option<String>,
     pub device: bool,
+    pub slot: Option<String>,
+    pub workers_config: Option<PathBuf>,
 }
 
 struct AndroidOneRunOptions<'a> {
@@ -768,6 +774,13 @@ pub fn run_android_1v1(options: AndroidRunOptions) -> Result<()> {
         run_build(&config, options.dry_run)?;
         run_apk_build(&config, &android_cfg, options.dry_run)?;
     }
+
+    let _lease = apply_worker_slot(
+        &mut android_cfg,
+        options.slot.as_deref(),
+        options.workers_config.as_deref(),
+        options.dry_run,
+    )?;
 
     // Boot the emulator once for the whole run series — re-booting per run is
     // 30-60s of overhead. We still install / uninstall fresh state each run.
@@ -849,6 +862,13 @@ pub fn run_android_ui(options: AndroidUiRunOptions) -> Result<()> {
         run_build(&config, options.dry_run)?;
         run_apk_build(&config, &android_cfg, options.dry_run)?;
     }
+
+    let _lease = apply_worker_slot(
+        &mut android_cfg,
+        options.slot.as_deref(),
+        options.workers_config.as_deref(),
+        options.dry_run,
+    )?;
 
     let mut emulator = android::prepare_target(&android_cfg, options.dry_run)?;
     let install_result = if options.no_install {
@@ -962,10 +982,6 @@ pub fn run_android_doctor(options: AndroidDoctorOptions) -> Result<()> {
     let apk = resolve_path(project_root(&config), &android_cfg.apk_path);
     let ui_cfg = android_ui_config(android_cfg.clone());
     let ui_apk = resolve_path(project_root(&config), &ui_cfg.apk_path);
-    println!("target: {:?}", android_cfg.target);
-    println!("package: {}", android_cfg.package_name);
-    println!("activity: {}", android_cfg.activity_name);
-    println!("apk: {}", apk.display());
     if !apk.exists() {
         bail!("configured APK does not exist: {}", apk.display());
     }
@@ -977,6 +993,16 @@ pub fn run_android_doctor(options: AndroidDoctorOptions) -> Result<()> {
             bail!("configured UI APK does not exist: {}", ui_apk.display());
         }
     }
+    let _lease = apply_worker_slot(
+        &mut android_cfg,
+        options.slot.as_deref(),
+        options.workers_config.as_deref(),
+        false,
+    )?;
+    println!("target: {:?}", android_cfg.target);
+    println!("package: {}", android_cfg.package_name);
+    println!("activity: {}", android_cfg.activity_name);
+    println!("apk: {}", apk.display());
     android::adb_bin(&android_cfg)?;
     if android_cfg.target == AndroidTarget::Emulator {
         android::emulator_bin(&android_cfg)?;
@@ -1159,6 +1185,21 @@ fn apply_android_overrides(cfg: &mut AndroidConfig, adb_serial: Option<String>, 
     if adb_serial.is_some() {
         cfg.adb_serial = adb_serial;
     }
+}
+
+fn apply_worker_slot(
+    cfg: &mut AndroidConfig,
+    slot: Option<&str>,
+    workers_config: Option<&Path>,
+    dry_run: bool,
+) -> Result<Option<crate::android_worker::AndroidLease>> {
+    let Some(slot) = slot else {
+        return Ok(None);
+    };
+    let slots = vec![slot.to_string()];
+    let lease = crate::android_worker::AndroidLease::acquire(workers_config, &slots, dry_run)?;
+    lease.apply_to_android_config(cfg)?;
+    Ok(Some(lease))
 }
 
 fn run_apk_build(config: &Config, android_cfg: &AndroidConfig, dry_run: bool) -> Result<()> {
@@ -1476,6 +1517,8 @@ mod tests {
             target: AndroidTarget::Emulator,
             avd_name: "test-avd".into(),
             adb_serial: None,
+            adb_host: None,
+            adb_port: None,
             apk_path: PathBuf::from("original.apk"),
             apk_build_command: None,
             ui_apk_path: Some(PathBuf::from("ui.apk")),
@@ -1579,6 +1622,8 @@ mod tests {
             target: AndroidTarget::Emulator,
             avd_name: "test-avd".into(),
             adb_serial: None,
+            adb_host: None,
+            adb_port: None,
             apk_path: PathBuf::from("test.apk"),
             apk_build_command: None,
             ui_apk_path: None,

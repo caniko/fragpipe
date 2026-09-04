@@ -99,6 +99,16 @@ pub fn launch_remote(
 }
 
 fn launch_command(config: &Config, remote: &RemotePeer, args: &[String]) -> Result<String> {
+    launch_command_with_files(config, remote, args, &remote.log_file, &remote.pid_file)
+}
+
+fn launch_command_with_files(
+    config: &Config,
+    remote: &RemotePeer,
+    args: &[String],
+    log_file: &str,
+    pid_file: &str,
+) -> Result<String> {
     let binary_name = remote_binary_name(config, remote)?;
     let mut env = String::new();
     for pair in &config.game.env {
@@ -109,14 +119,18 @@ fn launch_command(config: &Config, remote: &RemotePeer, args: &[String]) -> Resu
     }
 
     let remote_binary = format!("{}/{}", remote.remote_dir, binary_name);
-    let remote_pid = format!("{}/{}", remote.remote_dir, remote.pid_file);
-    let command = format!(
-        "cd {} || exit 1; {}nohup {} {} > {} 2>&1 < /dev/null & printf '%s\\n' $! > {}",
-        shell_quote(&remote.remote_dir),
-        env,
+    let remote_pid = format!("{}/{}", remote.remote_dir, pid_file);
+    let run = format!(
+        "{} {}; _fragpipe_status=$?; printf '\\nFRAGPIPE_REMOTE_EXIT=%s\\n' \"$_fragpipe_status\"",
         shell_quote(&remote_binary),
         shell_args(args),
-        shell_quote(&remote.log_file),
+    );
+    let command = format!(
+        "cd {} || exit 1; {}nohup sh -lc {} > {} 2>&1 < /dev/null & printf '%s\\n' $! > {}",
+        shell_quote(&remote.remote_dir),
+        env,
+        shell_quote(run),
+        shell_quote(log_file),
         shell_quote(&remote_pid),
     );
     Ok(command)
@@ -178,6 +192,103 @@ pub fn remote_log(remote: &RemotePeer) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+#[derive(Debug)]
+pub struct RemoteInstanceSnapshot {
+    pub log: String,
+    pub running: bool,
+    pub exit_code: Option<i32>,
+}
+
+pub fn launch_remote_instance(
+    config: &Config,
+    remote: &RemotePeer,
+    index: u8,
+    args: &[String],
+    dry_run: bool,
+) -> Result<()> {
+    if remote.restricted {
+        bail!("multiple remote processes are not supported by restricted SSH peers");
+    }
+    let (log_file, pid_file) = instance_files(index);
+    let command = launch_command_with_files(config, remote, args, &log_file, &pid_file)?;
+    println!(
+        "==> Remote tournament peer {index} on {}: {command}",
+        remote.name
+    );
+    run_ssh(&remote.host, &command, dry_run)
+}
+
+pub fn stop_remote_instance(remote: &RemotePeer, index: u8, dry_run: bool) -> Result<()> {
+    if remote.restricted {
+        bail!("multiple remote processes are not supported by restricted SSH peers");
+    }
+    run_ssh(&remote.host, &stop_instance_command(remote, index), dry_run)
+}
+
+pub fn clear_remote_instance_log(remote: &RemotePeer, index: u8, dry_run: bool) -> Result<()> {
+    let (log_file, _) = instance_files(index);
+    run_ssh(
+        &remote.host,
+        &format!(
+            "rm -f {}",
+            shell_quote(format!("{}/{}", remote.remote_dir, log_file))
+        ),
+        dry_run,
+    )
+}
+
+pub fn remote_instance_snapshot(remote: &RemotePeer, index: u8) -> Result<RemoteInstanceSnapshot> {
+    let (log_file, pid_file) = instance_files(index);
+    let log_path = shell_quote(format!("{}/{}", remote.remote_dir, log_file));
+    let pid_path = shell_quote(format!("{}/{}", remote.remote_dir, pid_file));
+    let command = format!(
+        "tail -n 200 {log_path} 2>/dev/null || true; printf '\\nFRAGPIPE_REMOTE_RUNNING='; if test -s {pid_path}; then _fragpipe_pid=$(cat {pid_path}); kill -0 \"$_fragpipe_pid\" 2>/dev/null && printf 1 || printf 0; else printf 0; fi"
+    );
+    let output = run_ssh_output(&remote.host, &command)?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let Some((log, running)) = text.rsplit_once("\nFRAGPIPE_REMOTE_RUNNING=") else {
+        bail!("remote peer {index} status response was malformed");
+    };
+    Ok(RemoteInstanceSnapshot {
+        log: log.to_string(),
+        running: running.trim() == "1",
+        exit_code: remote_exit_code(log),
+    })
+}
+
+pub fn remote_instance_log(remote: &RemotePeer, index: u8) -> Result<String> {
+    let (log_file, _) = instance_files(index);
+    let command = format!(
+        "cat {} 2>/dev/null || true",
+        shell_quote(format!("{}/{}", remote.remote_dir, log_file))
+    );
+    let output = run_ssh_output(&remote.host, &command)?;
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn instance_files(index: u8) -> (String, String) {
+    (
+        format!("fragpipe-peer-{index}.log"),
+        format!(".fragpipe-peer-{index}.pid"),
+    )
+}
+
+fn remote_exit_code(log: &str) -> Option<i32> {
+    log.lines()
+        .rev()
+        .find_map(|line| line.strip_prefix("FRAGPIPE_REMOTE_EXIT="))?
+        .parse()
+        .ok()
+}
+
+fn stop_instance_command(remote: &RemotePeer, index: u8) -> String {
+    let (_, pid_file) = instance_files(index);
+    let pid = shell_quote(format!("{}/{}", remote.remote_dir, pid_file));
+    format!(
+        "if test -s {pid}; then _fragpipe_pid=$(cat {pid}); pkill -P \"$_fragpipe_pid\" 2>/dev/null || true; kill \"$_fragpipe_pid\" 2>/dev/null || true; fi; rm -f {pid}"
+    )
+}
+
 fn run_ssh(host: &str, command: &str, dry_run: bool) -> Result<()> {
     let command = remote_shell(command);
     println!("ssh {host} {command}");
@@ -190,6 +301,16 @@ fn run_ssh(host: &str, command: &str, dry_run: bool) -> Result<()> {
         .status()
         .with_context(|| format!("failed to run ssh command on {host}"))?;
     ensure_success(status, "ssh command")
+}
+
+fn run_ssh_output(host: &str, command: &str) -> Result<std::process::Output> {
+    let output = Command::new("ssh")
+        .arg(host)
+        .arg(remote_shell(command))
+        .output()
+        .with_context(|| format!("failed to run SSH command on {host}"))?;
+    ensure_success(output.status, "ssh command")?;
+    Ok(output)
 }
 
 /// Fleetix user shells are Nushell on the game hosts, while Fragpipe's
@@ -796,7 +917,36 @@ mod tests {
         let remote = test_remote();
         let command = launch_command(&config, &remote, &[]).unwrap();
         assert!(command.contains("cd /remote || exit 1;"));
+        assert!(command.contains("FRAGPIPE_REMOTE_EXIT=%s"));
         assert!(!command.contains("&&"));
+    }
+
+    #[test]
+    fn tournament_instances_use_distinct_pid_and_log_files() {
+        assert_eq!(
+            instance_files(4),
+            ("fragpipe-peer-4.log".into(), ".fragpipe-peer-4.pid".into())
+        );
+        assert_ne!(instance_files(4), instance_files(5));
+    }
+
+    #[test]
+    fn tournament_instance_stop_only_targets_its_pid() {
+        let remote = test_remote();
+        let command = stop_instance_command(&remote, 4);
+        assert!(command.contains(".fragpipe-peer-4.pid"));
+        assert!(!command.contains("pkill -x"));
+        assert!(!command.contains("game"));
+    }
+
+    #[test]
+    fn remote_exit_code_uses_last_status_marker() {
+        assert_eq!(remote_exit_code("log\nFRAGPIPE_REMOTE_EXIT=1\n"), Some(1));
+        assert_eq!(
+            remote_exit_code("FRAGPIPE_REMOTE_EXIT=1\nFRAGPIPE_REMOTE_EXIT=0\n"),
+            Some(0)
+        );
+        assert_eq!(remote_exit_code("log only"), None);
     }
 
     #[test]

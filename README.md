@@ -11,7 +11,7 @@ Bare-metal multiplayer and Android device test orchestration.
 Fragpipe owns local, bare-metal, SSH, and Android-device smoke testing for
 projects that can expose deterministic command-line launch modes. It does not
 replace cluster harnesses such as steampipe; those remain better suited for VM,
-Steam, and tournament orchestration.
+Steam, chaos, and isolated-host orchestration.
 
 ## WebRTC 1v1
 
@@ -44,6 +44,21 @@ without killing unrelated games.
 Each non-dry run also preserves `logs/fragpipe/direct-1v1/run-NN/` with the
 local listener log, remote log tail, and JSON result report. Override this
 directory with `[direct].artifact_dir` when a project keeps evidence elsewhere.
+
+## Direct LAN Tournament
+
+`direct-tournament` runs one local tournament coordinator, additional local
+players, and multiple players on one SSH peer. The project config owns the
+player split and arguments. Every process must reach the configured completion
+marker and exit successfully.
+
+```bash
+fragpipe direct-tournament --config fragpipe.toml --remote nomad --max-runs 1
+```
+
+Remote tournament players use distinct PID and log files, so cleanup only
+stops processes belonging to that run. Complete per-player logs and the JSON
+report are preserved below `[tournament].artifact_dir`.
 
 ### Restricted SSH peers
 
@@ -119,6 +134,37 @@ configuration before running a loop:
 
 ```bash
 fragpipe android-doctor --config examples/chessbender.toml
+```
+
+## Remote Android workers
+
+Named slots let the local build and test process use emulators or devices on
+another PC through a loopback-only SSH tunnel. Worker configuration defaults
+to `$XDG_CONFIG_HOME/fragpipe/workers.toml`:
+
+```toml
+[[android_worker]]
+name = "nomad"
+host = "dnomad"
+adb_server_port = 5037
+local_port = 15037
+
+[[android_worker.slots]]
+name = "nomad-aosp35-0"
+kind = "emulator"
+adb_serial = "emulator-5554"
+systemd_unit = "canix-android-aosp35-0.service"
+```
+
+Use one slot with the existing runners, or lease several slots for a local
+command. Multiple slots must belong to the same worker and preserve command
+line order in `FRAGPIPE_ANDROID_SERIAL_0`, `_1`, and so on.
+`local_port` is the first tunnel port; later slots use consecutive ports so
+separate slots can be leased concurrently.
+
+```bash
+fragpipe android-doctor --config examples/chessbender.toml --slot nomad-aosp35-0
+fragpipe android-with --slot nomad-aosp35-0 --slot nomad-aosp35-1 -- ./test.sh
 ```
 
 ## MCP and Codex Plugin

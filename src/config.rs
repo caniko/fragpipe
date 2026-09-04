@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs;
 use std::net::IpAddr;
@@ -17,6 +18,8 @@ pub struct Config {
     #[serde(default)]
     pub direct: DirectConfig,
     #[serde(default)]
+    pub tournament: Option<TournamentConfig>,
+    #[serde(default)]
     pub internet: InternetConfig,
     #[serde(default)]
     pub android: Option<AndroidConfig>,
@@ -25,6 +28,107 @@ pub struct Config {
     #[serde(default)]
     #[serde(rename = "steampipe_command")]
     pub _steampipe_command: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerConfig {
+    #[serde(default)]
+    pub android_worker: Vec<AndroidWorker>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AndroidWorker {
+    pub name: String,
+    pub host: String,
+    #[serde(default = "default_adb_server_port")]
+    pub adb_server_port: u16,
+    pub local_port: u16,
+    #[serde(default = "default_android_worker_lock_dir")]
+    pub lock_dir: PathBuf,
+    #[serde(default)]
+    pub slots: Vec<AndroidWorkerSlot>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AndroidWorkerSlot {
+    pub name: String,
+    pub kind: AndroidWorkerSlotKind,
+    pub adb_serial: String,
+    #[serde(default)]
+    pub systemd_unit: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AndroidWorkerSlotKind {
+    Emulator,
+    Device,
+}
+
+impl WorkerConfig {
+    fn validate(&self) -> Result<()> {
+        let mut worker_names = HashSet::new();
+        let mut slot_names = HashSet::new();
+        let mut local_ports = HashSet::new();
+        for worker in &self.android_worker {
+            if !valid_worker_name(&worker.name) || worker.host.is_empty() {
+                anyhow::bail!("android worker name and host must not be empty");
+            }
+            if !worker_names.insert(&worker.name) {
+                anyhow::bail!("duplicate android worker name `{}`", worker.name);
+            }
+            let mut serials = HashSet::new();
+            for (index, slot) in worker.slots.iter().enumerate() {
+                let local_port = worker
+                    .local_port
+                    .checked_add(u16::try_from(index).context("too many Android slots")?)
+                    .context("Android worker local port range exceeds 65535")?;
+                if !local_ports.insert(local_port) {
+                    anyhow::bail!("duplicate Android worker local port {local_port}");
+                }
+                if !valid_worker_name(&slot.name) || slot.adb_serial.is_empty() {
+                    anyhow::bail!("android slot name and adb_serial must not be empty");
+                }
+                if !slot_names.insert(&slot.name) {
+                    anyhow::bail!("duplicate android slot name `{}`", slot.name);
+                }
+                if !serials.insert(&slot.adb_serial) {
+                    anyhow::bail!(
+                        "duplicate adb serial `{}` on worker `{}`",
+                        slot.adb_serial,
+                        worker.name
+                    );
+                }
+                match (slot.kind, slot.systemd_unit.as_deref()) {
+                    (AndroidWorkerSlotKind::Emulator, None) => {
+                        anyhow::bail!("emulator slot `{}` requires systemd_unit", slot.name)
+                    }
+                    (_, Some(unit)) if !valid_systemd_unit(unit) => {
+                        anyhow::bail!("android slot `{}` has invalid systemd_unit", slot.name)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn valid_systemd_unit(unit: &str) -> bool {
+    unit.ends_with(".service")
+        && unit
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-_.@".contains(&byte))
+}
+
+fn valid_worker_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte))
 }
 
 #[derive(Debug, Deserialize)]
@@ -188,6 +292,28 @@ impl Default for DirectConfig {
     }
 }
 
+/// Multi-process physical-LAN tournament orchestration settings.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TournamentConfig {
+    pub local_ip: IpAddr,
+    pub port: u16,
+    pub local_players: u8,
+    pub remote_players: u8,
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
+    #[serde(default = "default_max_runs")]
+    pub max_runs: u32,
+    #[serde(default = "default_tournament_stagger_ms")]
+    pub stagger_ms: u64,
+    pub ready_marker: String,
+    pub pass_marker: String,
+    #[serde(default = "default_tournament_artifact_dir")]
+    pub artifact_dir: PathBuf,
+    pub host_args: Vec<String>,
+    pub joiner_args: Vec<String>,
+}
+
 /// Android emulator + APK driving for the `android-1v1` runner.
 ///
 /// Fragpipe boots a pre-baked AVD, installs the test-peer APK, pushes a
@@ -208,6 +334,12 @@ pub struct AndroidConfig {
     /// deterministic physical-device fix loops.
     #[serde(default)]
     pub adb_serial: Option<String>,
+    /// Optional adb server host, used for SSH-tunneled remote workers.
+    #[serde(default)]
+    pub adb_host: Option<String>,
+    /// Optional adb server port. Requires `adb_host`.
+    #[serde(default)]
+    pub adb_port: Option<u16>,
     /// Path to the APK to install on the Android target.
     pub apk_path: PathBuf,
     /// Optional command to build/stage the configured APK before install.
@@ -308,6 +440,71 @@ pub fn load_config(path: &Path) -> Result<Config> {
     toml::from_str(&text).with_context(|| format!("failed to parse config {}", path.display()))
 }
 
+pub fn load_worker_config(path: Option<&Path>) -> Result<WorkerConfig> {
+    let path = match path {
+        Some(path) => path.to_path_buf(),
+        None => default_worker_config_path()?,
+    };
+    let text = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read worker config {}", path.display()))?;
+    let config: WorkerConfig = toml::from_str(&text)
+        .with_context(|| format!("failed to parse worker config {}", path.display()))?;
+    config.validate()?;
+    Ok(config)
+}
+
+pub fn select_android_slots<'a>(
+    config: &'a WorkerConfig,
+    names: &[String],
+) -> Result<(&'a AndroidWorker, Vec<&'a AndroidWorkerSlot>)> {
+    if names.is_empty() {
+        anyhow::bail!("at least one --slot is required");
+    }
+    let mut selected_worker = None;
+    let mut selected = Vec::with_capacity(names.len());
+    let mut selected_names = HashSet::new();
+    for name in names {
+        if !selected_names.insert(name) {
+            anyhow::bail!("android slot `{name}` was selected more than once");
+        }
+        let (worker, slot) = config
+            .android_worker
+            .iter()
+            .find_map(|worker| {
+                worker
+                    .slots
+                    .iter()
+                    .find(|slot| slot.name == *name)
+                    .map(|slot| (worker, slot))
+            })
+            .ok_or_else(|| anyhow!("android slot `{name}` is not defined"))?;
+        if let Some(existing) = selected_worker {
+            if existing != worker.name {
+                anyhow::bail!("all selected Android slots must belong to one worker");
+            }
+        } else {
+            selected_worker = Some(worker.name.as_str());
+        }
+        selected.push(slot);
+    }
+    let worker_name = selected_worker.expect("non-empty slot selection");
+    let worker = config
+        .android_worker
+        .iter()
+        .find(|worker| worker.name == worker_name)
+        .expect("selected worker exists");
+    Ok((worker, selected))
+}
+
+fn default_worker_config_path() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("XDG_CONFIG_HOME") {
+        return Ok(PathBuf::from(path).join("fragpipe/workers.toml"));
+    }
+    let home = std::env::var_os("HOME")
+        .context("HOME or XDG_CONFIG_HOME must be set when --workers-config is omitted")?;
+    Ok(PathBuf::from(home).join(".config/fragpipe/workers.toml"))
+}
+
 pub fn select_remote<'a>(config: &'a Config, name: &str) -> Result<&'a RemotePeer> {
     config
         .remote
@@ -406,6 +603,14 @@ fn default_direct_artifact_dir() -> PathBuf {
     PathBuf::from("logs/fragpipe/direct-1v1")
 }
 
+fn default_tournament_artifact_dir() -> PathBuf {
+    PathBuf::from("logs/fragpipe/direct-tournament")
+}
+
+fn default_tournament_stagger_ms() -> u64 {
+    800
+}
+
 fn default_internet_pass_marker() -> String {
     "GAME OVER".into()
 }
@@ -416,6 +621,14 @@ fn default_android_activity() -> String {
 
 fn default_android_avd_name() -> String {
     "Pixel_6_API_34".into()
+}
+
+fn default_adb_server_port() -> u16 {
+    5037
+}
+
+fn default_android_worker_lock_dir() -> PathBuf {
+    PathBuf::from("/run/lock/canix/android-worker")
 }
 
 fn default_android_log_tag() -> String {
@@ -483,6 +696,7 @@ mod tests {
         .unwrap();
         assert_eq!(config.game.name, "game");
         assert!(config.android.is_none());
+        assert!(config.tournament.is_none());
         assert!(config.remote.is_empty());
     }
 
@@ -737,6 +951,34 @@ mod tests {
     }
 
     #[test]
+    fn tournament_config_deserializes() {
+        let config: Config = toml::from_str(
+            r#"
+            [game]
+            binary = "game"
+            [tournament]
+            local_ip = "10.10.0.1"
+            port = 27100
+            local_players = 4
+            remote_players = 4
+            ready_marker = "ready"
+            pass_marker = "complete"
+            host_args = ["--host"]
+            joiner_args = ["--join", "{local_ip}:{port}", "{index}"]
+            "#,
+        )
+        .unwrap();
+        let tournament = config.tournament.unwrap();
+        assert_eq!(tournament.local_players, 4);
+        assert_eq!(tournament.remote_players, 4);
+        assert_eq!(tournament.stagger_ms, 800);
+        assert_eq!(
+            tournament.artifact_dir,
+            PathBuf::from("logs/fragpipe/direct-tournament")
+        );
+    }
+
+    #[test]
     fn full_config_deserializes_with_android_and_remote() {
         let config: Config = toml::from_str(
             r#"
@@ -793,5 +1035,226 @@ mod tests {
         assert_eq!(android.boot_timeout_secs, 120);
         assert_eq!(config.remote.len(), 1);
         assert_eq!(config.remote[0].binary_name.as_deref(), Some("remote-bin"));
+    }
+
+    #[test]
+    fn worker_config_selects_multiple_slots_on_one_worker() {
+        let config: WorkerConfig = toml::from_str(
+            r#"
+            [[android_worker]]
+            name = "nomad"
+            host = "dnomad"
+            local_port = 15037
+
+            [[android_worker.slots]]
+            name = "nomad-aosp35-0"
+            kind = "emulator"
+            adb_serial = "emulator-5554"
+            systemd_unit = "canix-android-aosp35-0.service"
+
+            [[android_worker.slots]]
+            name = "nomad-aosp35-1"
+            kind = "emulator"
+            adb_serial = "emulator-5558"
+            systemd_unit = "canix-android-aosp35-1.service"
+            "#,
+        )
+        .unwrap();
+        config.validate().unwrap();
+        let names = vec!["nomad-aosp35-0".into(), "nomad-aosp35-1".into()];
+        let (worker, slots) = select_android_slots(&config, &names).unwrap();
+        assert_eq!(worker.host, "dnomad");
+        assert_eq!(worker.adb_server_port, 5037);
+        assert_eq!(slots[1].adb_serial, "emulator-5558");
+    }
+
+    #[test]
+    fn worker_config_rejects_duplicate_slots() {
+        let config: WorkerConfig = toml::from_str(
+            r#"
+            [[android_worker]]
+            name = "nomad"
+            host = "dnomad"
+            local_port = 15037
+
+            [[android_worker.slots]]
+            name = "same"
+            kind = "device"
+            adb_serial = "first"
+
+            [[android_worker.slots]]
+            name = "same"
+            kind = "device"
+            adb_serial = "second"
+            "#,
+        )
+        .unwrap();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn worker_config_rejects_unknown_fields() {
+        assert!(
+            toml::from_str::<WorkerConfig>(
+                r#"
+                [[android_worker]]
+                name = "nomad"
+                host = "dnomad"
+                local_port = 15037
+                arbitrary_command = "start anything"
+                "#,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn worker_config_rejects_duplicate_workers() {
+        let config: WorkerConfig = toml::from_str(
+            r#"
+            [[android_worker]]
+            name = "nomad"
+            host = "first"
+            local_port = 15037
+            [[android_worker.slots]]
+            name = "first"
+            kind = "device"
+            adb_serial = "first"
+
+            [[android_worker]]
+            name = "nomad"
+            host = "second"
+            local_port = 15038
+            [[android_worker.slots]]
+            name = "second"
+            kind = "device"
+            adb_serial = "second"
+            "#,
+        )
+        .unwrap();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn worker_config_rejects_duplicate_serials() {
+        let config: WorkerConfig = toml::from_str(
+            r#"
+            [[android_worker]]
+            name = "nomad"
+            host = "dnomad"
+            local_port = 15037
+            [[android_worker.slots]]
+            name = "first"
+            kind = "device"
+            adb_serial = "same"
+            [[android_worker.slots]]
+            name = "second"
+            kind = "device"
+            adb_serial = "same"
+            "#,
+        )
+        .unwrap();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn worker_config_rejects_overlapping_local_port_ranges() {
+        let config: WorkerConfig = toml::from_str(
+            r#"
+            [[android_worker]]
+            name = "one"
+            host = "one"
+            local_port = 15037
+            [[android_worker.slots]]
+            name = "one-a"
+            kind = "device"
+            adb_serial = "one-a"
+            [[android_worker.slots]]
+            name = "one-b"
+            kind = "device"
+            adb_serial = "one-b"
+
+            [[android_worker]]
+            name = "two"
+            host = "two"
+            local_port = 15038
+            [[android_worker.slots]]
+            name = "two-a"
+            kind = "device"
+            adb_serial = "two-a"
+            "#,
+        )
+        .unwrap();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn worker_config_rejects_duplicate_selection() {
+        let config: WorkerConfig = toml::from_str(
+            r#"
+            [[android_worker]]
+            name = "nomad"
+            host = "dnomad"
+            local_port = 15037
+            [[android_worker.slots]]
+            name = "slot"
+            kind = "device"
+            adb_serial = "serial"
+            "#,
+        )
+        .unwrap();
+        config.validate().unwrap();
+        assert!(select_android_slots(&config, &["slot".into(), "slot".into()]).is_err());
+    }
+
+    #[test]
+    fn emulator_slot_requires_valid_service_unit() {
+        for unit in [None, Some("not-a-service"), Some("../bad.service")] {
+            let text = format!(
+                r#"
+                [[android_worker]]
+                name = "nomad"
+                host = "dnomad"
+                local_port = 15037
+                [[android_worker.slots]]
+                name = "slot"
+                kind = "emulator"
+                adb_serial = "emulator-5554"
+                {}
+                "#,
+                unit.map_or_else(String::new, |unit| format!("systemd_unit = {unit:?}"))
+            );
+            let config: WorkerConfig = toml::from_str(&text).unwrap();
+            assert!(config.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn worker_config_rejects_cross_worker_selection() {
+        let config: WorkerConfig = toml::from_str(
+            r#"
+            [[android_worker]]
+            name = "one"
+            host = "one"
+            local_port = 15037
+            [[android_worker.slots]]
+            name = "slot-one"
+            kind = "device"
+            adb_serial = "one"
+
+            [[android_worker]]
+            name = "two"
+            host = "two"
+            local_port = 15038
+            [[android_worker.slots]]
+            name = "slot-two"
+            kind = "device"
+            adb_serial = "two"
+            "#,
+        )
+        .unwrap();
+        config.validate().unwrap();
+        let names = vec!["slot-one".into(), "slot-two".into()];
+        assert!(select_android_slots(&config, &names).is_err());
     }
 }

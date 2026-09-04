@@ -15,7 +15,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
-use crate::config::{Config, DirectConfig, RemotePeer, load_config, select_remote};
+use crate::config::{
+    Config, DirectConfig, RemotePeer, TournamentConfig, load_config, select_remote,
+};
 use crate::logwatch::{LogSignal, classify_log, classify_non_success_log, read_lossy};
 use crate::process::{kill_child, remove_if_exists, run_build, spawn_logged};
 use crate::ssh;
@@ -34,6 +36,19 @@ pub struct DirectRunOptions {
     pub dry_run: bool,
     pub output_format: OutputFormat,
     pub transport: Option<String>,
+}
+
+pub struct TournamentRunOptions {
+    pub config_path: PathBuf,
+    pub remote: String,
+    pub max_runs: Option<u32>,
+    pub timeout_secs: Option<u64>,
+    pub stop_on_failure: bool,
+    pub no_build: bool,
+    pub no_deploy: bool,
+    pub local_ip: Option<IpAddr>,
+    pub dry_run: bool,
+    pub output_format: OutputFormat,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -129,6 +144,82 @@ pub fn run_direct_1v1(options: DirectRunOptions) -> Result<()> {
     }
 }
 
+pub fn run_direct_tournament(options: TournamentRunOptions) -> Result<()> {
+    let config = load_config(&options.config_path)?;
+    let tournament = config
+        .tournament
+        .as_ref()
+        .context("direct-tournament requires a [tournament] config section")?;
+    let remote = select_remote(&config, &options.remote)?;
+    let max_runs = options.max_runs.unwrap_or(tournament.max_runs);
+    let timeout = Duration::from_secs(options.timeout_secs.unwrap_or(tournament.timeout_secs));
+    let local_ip = options.local_ip.unwrap_or(tournament.local_ip);
+    let total_players = tournament
+        .local_players
+        .checked_add(tournament.remote_players)
+        .context("direct-tournament player count overflow")?;
+    if max_runs == 0 || timeout.is_zero() || tournament.port == 0 {
+        bail!("direct-tournament runs, timeout, and port must be greater than zero");
+    }
+    if tournament.local_players == 0 || tournament.remote_players == 0 || total_players < 2 {
+        bail!("direct-tournament requires local and remote players");
+    }
+    if remote.restricted {
+        bail!("direct-tournament requires an unrestricted SSH peer");
+    }
+
+    println!("Fragpipe project: {}", config.game.name);
+    println!(
+        "Direct LAN tournament: {} local + {} on {} via {} ({}:{})",
+        tournament.local_players,
+        tournament.remote_players,
+        remote.name,
+        remote.host,
+        local_ip,
+        tournament.port,
+    );
+
+    if !options.no_build {
+        run_build(&config, options.dry_run)?;
+    }
+    if !options.no_deploy {
+        ssh::deploy(&config, remote, options.dry_run)?;
+    }
+
+    let context = TournamentRunContext {
+        config: &config,
+        tournament,
+        remote,
+        local_ip,
+        timeout,
+        dry_run: options.dry_run,
+    };
+    let mut passed = 0;
+    let mut failed = 0;
+    for run in 1..=max_runs {
+        println!("=== RUN {run}/{max_runs} ===");
+        let report = run_tournament_once(&context, run);
+        emit_report(options.output_format, &report)?;
+        match report.status {
+            RunStatus::Pass => passed += 1,
+            RunStatus::Fail | RunStatus::Timeout => {
+                failed += 1;
+                if options.stop_on_failure {
+                    break;
+                }
+            }
+        }
+    }
+
+    println!("=== SUMMARY ===");
+    println!("{passed}/{max_runs} passed, {failed} failed");
+    if failed == 0 {
+        Ok(())
+    } else {
+        bail!("{failed} direct LAN tournament run(s) failed")
+    }
+}
+
 struct DirectRunContext<'a> {
     config: &'a Config,
     remote: &'a RemotePeer,
@@ -137,6 +228,315 @@ struct DirectRunContext<'a> {
     timeout: Duration,
     headless: bool,
     dry_run: bool,
+}
+
+struct TournamentRunContext<'a> {
+    config: &'a Config,
+    tournament: &'a TournamentConfig,
+    remote: &'a RemotePeer,
+    local_ip: IpAddr,
+    timeout: Duration,
+    dry_run: bool,
+}
+
+struct LocalTournamentPeer {
+    index: u8,
+    child: Child,
+    log: PathBuf,
+    passed: bool,
+    exited: bool,
+}
+
+struct RemoteTournamentPeer {
+    index: u8,
+    passed: bool,
+    exited: bool,
+}
+
+fn run_tournament_once(context: &TournamentRunContext<'_>, run: u32) -> RunReport {
+    let started = Instant::now();
+    let run_dir = crate::config::resolve_path(
+        crate::config::project_root(context.config),
+        &context.tournament.artifact_dir,
+    )
+    .join(format!("run-{run:02}"));
+    let result = run_tournament_once_inner(context, &run_dir);
+    let captured = capture_and_validate_tournament_logs(context, &run_dir);
+    let result = match (result, captured) {
+        (Ok(label), Ok(())) => Ok(label),
+        (Ok(_), Err(error)) | (Err(error), _) => Err(error),
+    };
+    let duration_secs = started.elapsed().as_secs();
+    let report = match result {
+        Ok(label) => RunReport {
+            run,
+            status: RunStatus::Pass,
+            label,
+            duration_secs,
+        },
+        Err(error) if error.to_string().contains("timed out") => RunReport {
+            run,
+            status: RunStatus::Timeout,
+            label: error.to_string(),
+            duration_secs,
+        },
+        Err(error) => RunReport {
+            run,
+            status: RunStatus::Fail,
+            label: error.to_string(),
+            duration_secs,
+        },
+    };
+    if !context.dry_run
+        && let Err(error) = fs::create_dir_all(&run_dir).and_then(|()| {
+            fs::write(
+                run_dir.join("report.json"),
+                serde_json::to_vec_pretty(&report).unwrap_or_default(),
+            )
+        })
+    {
+        eprintln!("warning: failed to write tournament report: {error}");
+    }
+    report
+}
+
+fn run_tournament_once_inner(context: &TournamentRunContext<'_>, run_dir: &Path) -> Result<String> {
+    if !context.dry_run {
+        fs::create_dir_all(run_dir)
+            .with_context(|| format!("failed to create {}", run_dir.display()))?;
+    }
+
+    let first_remote = context.tournament.local_players;
+    let total_players = first_remote + context.tournament.remote_players;
+    for index in first_remote..total_players {
+        ssh::stop_remote_instance(context.remote, index, context.dry_run)?;
+        ssh::clear_remote_instance_log(context.remote, index, context.dry_run)?;
+    }
+
+    let host_log = run_dir.join("peer-0.log");
+    let host_args = tournament_args(
+        &context.tournament.host_args,
+        context.config,
+        context.local_ip,
+        context.tournament.port,
+        0,
+        true,
+    );
+    let host = spawn_logged(
+        context.config,
+        &host_args,
+        &host_log,
+        context.dry_run,
+        "Local tournament host",
+    )?;
+    let mut local = vec![LocalTournamentPeer {
+        index: 0,
+        child: host,
+        log: host_log,
+        passed: false,
+        exited: false,
+    }];
+    let mut remote = Vec::new();
+
+    let result = (|| {
+        if !context.dry_run {
+            let host_peer = &mut local[0];
+            wait_for_process_marker(
+                context.config,
+                &mut host_peer.child,
+                &host_peer.log,
+                &context.tournament.ready_marker,
+                context.timeout,
+                "local tournament host",
+            )?;
+        }
+
+        for index in 1..context.tournament.local_players {
+            let log = run_dir.join(format!("peer-{index}.log"));
+            let args = tournament_args(
+                &context.tournament.joiner_args,
+                context.config,
+                context.local_ip,
+                context.tournament.port,
+                index,
+                false,
+            );
+            local.push(LocalTournamentPeer {
+                index,
+                child: spawn_logged(
+                    context.config,
+                    &args,
+                    &log,
+                    context.dry_run,
+                    &format!("Local tournament peer {index}"),
+                )?,
+                log,
+                passed: false,
+                exited: false,
+            });
+            stagger(context.tournament.stagger_ms, context.dry_run);
+        }
+
+        for index in first_remote..total_players {
+            let args = tournament_args(
+                &context.tournament.joiner_args,
+                context.config,
+                context.local_ip,
+                context.tournament.port,
+                index,
+                false,
+            );
+            ssh::launch_remote_instance(
+                context.config,
+                context.remote,
+                index,
+                &args,
+                context.dry_run,
+            )?;
+            remote.push(RemoteTournamentPeer {
+                index,
+                passed: false,
+                exited: false,
+            });
+            stagger(context.tournament.stagger_ms, context.dry_run);
+        }
+
+        if context.dry_run {
+            return Ok("DRY_RUN".into());
+        }
+        watch_tournament(context, &mut local, &mut remote)
+    })();
+
+    let mut cleanup_error = None;
+    for peer in &mut local {
+        kill_child(&mut peer.child);
+    }
+    for index in first_remote..total_players {
+        if let Err(error) = ssh::stop_remote_instance(context.remote, index, context.dry_run) {
+            cleanup_error.get_or_insert(error);
+        }
+    }
+    if result.is_ok()
+        && let Some(error) = cleanup_error
+    {
+        return Err(error);
+    }
+    result
+}
+
+fn watch_tournament(
+    context: &TournamentRunContext<'_>,
+    local: &mut [LocalTournamentPeer],
+    remote: &mut [RemoteTournamentPeer],
+) -> Result<String> {
+    let started = Instant::now();
+    loop {
+        for peer in &mut *local {
+            let text = read_lossy(&peer.log);
+            if let Some(label) = classify_non_success_log(&context.config.process, &text) {
+                bail!("local tournament peer {} reported {label}", peer.index);
+            }
+            peer.passed |= text.contains(&context.tournament.pass_marker);
+            if !peer.exited
+                && let Some(status) = peer.child.try_wait().with_context(|| {
+                    format!("failed to poll local tournament peer {}", peer.index)
+                })?
+            {
+                if !status.success() || !peer.passed {
+                    bail!(
+                        "local tournament peer {} exited before completion: {status}",
+                        peer.index
+                    );
+                }
+                peer.exited = true;
+            }
+        }
+
+        // ponytail: one SSH poll per remote peer; batch by host if sessions grow past single digits.
+        for peer in &mut *remote {
+            let snapshot = ssh::remote_instance_snapshot(context.remote, peer.index)?;
+            if let Some(label) = classify_non_success_log(&context.config.process, &snapshot.log) {
+                bail!("remote tournament peer {} reported {label}", peer.index);
+            }
+            peer.passed |= snapshot.log.contains(&context.tournament.pass_marker);
+            peer.exited = !snapshot.running;
+            if peer.exited && (snapshot.exit_code != Some(0) || !peer.passed) {
+                bail!(
+                    "remote tournament peer {} exited before completion with status {:?}",
+                    peer.index,
+                    snapshot.exit_code
+                );
+            }
+        }
+
+        if local.iter().all(|peer| peer.passed && peer.exited)
+            && remote.iter().all(|peer| peer.passed && peer.exited)
+        {
+            return Ok(context.tournament.pass_marker.clone());
+        }
+        if started.elapsed() > context.timeout {
+            bail!(
+                "timed out after {}s waiting for all tournament peers to complete",
+                context.timeout.as_secs()
+            );
+        }
+        thread::sleep(Duration::from_secs(1));
+    }
+}
+
+fn capture_and_validate_tournament_logs(
+    context: &TournamentRunContext<'_>,
+    run_dir: &Path,
+) -> Result<()> {
+    if context.dry_run {
+        return Ok(());
+    }
+    let first_remote = context.tournament.local_players;
+    let total_players = first_remote + context.tournament.remote_players;
+    for index in first_remote..total_players {
+        let text = ssh::remote_instance_log(context.remote, index)?;
+        fs::write(run_dir.join(format!("peer-{index}.log")), text)
+            .with_context(|| format!("failed to preserve remote tournament peer {index} log"))?;
+    }
+    for index in 0..total_players {
+        let text = read_lossy(&run_dir.join(format!("peer-{index}.log")));
+        if let Some(label) = classify_non_success_log(&context.config.process, &text) {
+            bail!("tournament peer {index} reported {label}");
+        }
+        if !text.contains(&context.tournament.pass_marker) {
+            bail!("tournament peer {index} is missing the completion marker");
+        }
+    }
+    Ok(())
+}
+
+fn stagger(milliseconds: u64, dry_run: bool) {
+    if !dry_run && milliseconds > 0 {
+        thread::sleep(Duration::from_millis(milliseconds));
+    }
+}
+
+fn tournament_args(
+    configured: &[String],
+    config: &Config,
+    local_ip: IpAddr,
+    port: u16,
+    index: u8,
+    host: bool,
+) -> Vec<String> {
+    let mut args = configured.to_vec();
+    for arg in &mut args {
+        *arg = arg
+            .replace("{local_ip}", &local_ip.to_string())
+            .replace("{port}", &port.to_string())
+            .replace("{index}", &index.to_string());
+    }
+    args.extend(if host {
+        config.game.listener_extra_args.clone()
+    } else {
+        config.game.joiner_extra_args.clone()
+    });
+    args
 }
 
 fn run_one(context: &DirectRunContext<'_>, run: u32) -> RunReport {
@@ -265,22 +665,40 @@ fn wait_for_ready(
     listener_log: &Path,
     timeout: Duration,
 ) -> Result<()> {
+    wait_for_process_marker(
+        config,
+        listener,
+        listener_log,
+        &config.direct.ready_marker,
+        timeout,
+        "local LAN listener",
+    )
+}
+
+fn wait_for_process_marker(
+    config: &Config,
+    process: &mut Child,
+    log: &Path,
+    marker: &str,
+    timeout: Duration,
+    label: &str,
+) -> Result<()> {
     let started = Instant::now();
-    while !read_lossy(listener_log).contains(&config.direct.ready_marker) {
-        if let Some(status) = listener
+    while !read_lossy(log).contains(marker) {
+        if let Some(status) = process
             .try_wait()
-            .context("failed to poll local LAN listener while waiting for readiness")?
+            .with_context(|| format!("failed to poll {label} while waiting for readiness"))?
         {
-            bail!("local LAN listener exited before readiness marker: {status}");
+            bail!("{label} exited before readiness marker: {status}");
         }
-        if let Some(label) = classify_non_success_log(&config.process, &read_lossy(listener_log)) {
-            bail!("local LAN listener reported {label} before readiness");
+        if let Some(fatal) = classify_non_success_log(&config.process, &read_lossy(log)) {
+            bail!("{label} reported {fatal} before readiness");
         }
         if started.elapsed() > timeout {
             bail!(
-                "timed out after {}s waiting for LAN readiness marker `{}`",
+                "timed out after {}s waiting for readiness marker `{}`",
                 timeout.as_secs(),
-                config.direct.ready_marker
+                marker
             );
         }
         thread::sleep(Duration::from_millis(250));
@@ -432,6 +850,33 @@ mod tests {
                 "10.10.0.1:27100",
                 "--auto-play"
             ]
+        );
+    }
+
+    #[test]
+    fn tournament_args_render_unique_peer_identity() {
+        let config: Config = toml::from_str(
+            r#"
+            [game]
+            binary = "game"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            tournament_args(
+                &[
+                    "--join".into(),
+                    "{local_ip}:{port}".into(),
+                    "--identity-dir".into(),
+                    "identity-{index}".into(),
+                ],
+                &config,
+                "10.10.0.1".parse().unwrap(),
+                27100,
+                4,
+                false,
+            ),
+            vec!["--join", "10.10.0.1:27100", "--identity-dir", "identity-4"]
         );
     }
 }

@@ -282,6 +282,14 @@ impl FragpipeMcp {
             args.push("--adb-serial".into());
             args.push(serial);
         }
+        if let Some(slot) = input.slot {
+            args.push("--slot".into());
+            args.push(slot);
+        }
+        if let Some(config) = input.workers_config {
+            args.push("--workers-config".into());
+            args.push(config);
+        }
         if let Some(config) = input.launch_config {
             args.push("--launch-config".into());
             args.push(config);
@@ -422,6 +430,20 @@ struct DirectRunInput {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct DirectTournamentInput {
+    #[serde(flatten)]
+    common: CommonInput,
+    /// Remote peer name from the config ([[remote]] section).
+    remote: String,
+    /// Reachable local IP for remote tournament peers to dial.
+    #[serde(default)]
+    local_ip: Option<String>,
+    /// Skip binary/assets deployment.
+    #[serde(default)]
+    no_deploy: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct InternetRunInput {
     #[serde(flatten)]
     common: CommonInput,
@@ -459,6 +481,12 @@ struct AndroidRunInput {
     /// adb serial for a physical device or specific emulator.
     #[serde(default)]
     adb_serial: Option<String>,
+    /// Named remote Android slot from the worker config.
+    #[serde(default)]
+    slot: Option<String>,
+    /// Android worker config path.
+    #[serde(default)]
+    workers_config: Option<String>,
     /// JSON launch config pushed to the Android target before activity start.
     #[serde(default)]
     launch_config: Option<String>,
@@ -474,6 +502,12 @@ struct AndroidDoctorInput {
     /// adb serial for a physical device or specific emulator.
     #[serde(default)]
     adb_serial: Option<String>,
+    /// Named remote Android slot from the worker config.
+    #[serde(default)]
+    slot: Option<String>,
+    /// Android worker config path.
+    #[serde(default)]
+    workers_config: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -501,6 +535,12 @@ struct CrossPlatformInput {
     /// adb serial for Android cells.
     #[serde(default)]
     adb_serial: Option<String>,
+    /// Named remote Android slot from the worker config.
+    #[serde(default)]
+    slot: Option<String>,
+    /// Android worker config path.
+    #[serde(default)]
+    workers_config: Option<String>,
     /// If true, passes `--no-install` to Android cells.
     #[serde(default)]
     no_install: Option<bool>,
@@ -1025,6 +1065,31 @@ impl FragpipeMcp {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
+    #[tool(
+        description = "Run a bare-metal multi-process LAN tournament through fragpipe over SSH."
+    )]
+    fn repeat_direct_tournament(
+        &self,
+        Parameters(input): Parameters<DirectTournamentInput>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let max_runs = input.common.max_runs.unwrap_or(1).min(50);
+        let timeout = input.common.timeout.unwrap_or(600);
+        let mut args = vec!["direct-tournament".to_string()];
+        push_common_fragpipe_args(&mut args, &input.common, max_runs, timeout);
+        args.push("--remote".into());
+        args.push(input.remote);
+        if let Some(local_ip) = input.local_ip {
+            args.push("--local-ip".into());
+            args.push(local_ip);
+        }
+        if input.no_deploy.unwrap_or(false) {
+            args.push("--no-deploy".into());
+        }
+        let total_timeout = timeout.saturating_mul(max_runs as u64).saturating_add(120);
+        let (output, _) = self.run_fragpipe(&input.common, args, total_timeout)?;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
     #[tool(description = "Run forced-relay internet 1v1 through fragpipe.")]
     fn repeat_internet_1v1(
         &self,
@@ -1069,6 +1134,14 @@ impl FragpipeMcp {
         if let Some(serial) = input.adb_serial {
             args.push("--adb-serial".into());
             args.push(serial);
+        }
+        if let Some(slot) = input.slot {
+            args.push("--slot".into());
+            args.push(slot);
+        }
+        if let Some(config) = input.workers_config {
+            args.push("--workers-config".into());
+            args.push(config);
         }
         let (output, _) =
             self.run_fragpipe(&input.common, args, input.common.timeout.unwrap_or(120))?;
@@ -1180,6 +1253,8 @@ impl FragpipeMcp {
                 no_install: input.no_install,
                 device: input.device,
                 adb_serial: input.adb_serial.clone(),
+                slot: input.slot.clone(),
+                workers_config: input.workers_config.clone(),
                 launch_config: None,
             };
             let (text, ok) = self.run_android(command, android_input, timeout_default)?;
