@@ -2,11 +2,12 @@
   description = "Bare-metal multiplayer and Android device test orchestration";
 
   inputs = {
-    rs-harbor.url = "git+https://github.com/caniko/rs-harbor.git?ref=trunk&rev=05cc4f162b55fa904b687db1821e2463fa813e50";
+    harbor-rs.url = "git+https://github.com/caniko/harbor-rs.git?ref=trunk&rev=05cc4f162b55fa904b687db1821e2463fa813e50";
+    rs-harbor.follows = "harbor-rs";
 
-    nixpkgs.follows = "rs-harbor/nixpkgs";
-    rust-overlay.follows = "rs-harbor/rust-overlay";
-    crane.follows = "rs-harbor/crane";
+    nixpkgs.follows = "harbor-rs/nixpkgs";
+    rust-overlay.follows = "harbor-rs/rust-overlay";
+    crane.follows = "harbor-rs/crane";
     flake-utils.url = "github:numtide/flake-utils";
 
     # The steampipe cluster harness (cluster-ctl + lib.mkTestCluster). fragpipe
@@ -15,7 +16,7 @@
     # depending on it directly.
     steampipe = {
       url = "git+ssh://git@codeberg.org/caniko/steampipe.git";
-      inputs.rs-harbor.follows = "rs-harbor";
+      inputs.rs-harbor.follows = "harbor-rs";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.rust-overlay.follows = "rust-overlay";
       inputs.crane.follows = "crane";
@@ -26,7 +27,7 @@
   outputs = {
     self,
     nixpkgs,
-    rs-harbor,
+    harbor-rs,
     flake-utils,
     rust-overlay,
     steampipe,
@@ -90,7 +91,7 @@
         overlays = [(import rust-overlay)];
       };
 
-      toolchain = rs-harbor.lib.mkToolchain {inherit pkgs; toolchainProfile = "nightly";};
+      toolchain = harbor-rs.lib.mkToolchain {inherit pkgs; toolchainProfile = "nightly";};
       inherit (toolchain) craneLib;
 
       src = craneLib.cleanCargoSource ./.;
