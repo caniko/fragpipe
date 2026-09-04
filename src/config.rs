@@ -17,6 +17,8 @@ pub struct Config {
     #[serde(default)]
     pub direct: DirectConfig,
     #[serde(default)]
+    pub tournament: Option<TournamentConfig>,
+    #[serde(default)]
     pub internet: InternetConfig,
     #[serde(default)]
     pub android: Option<AndroidConfig>,
@@ -186,6 +188,28 @@ impl Default for DirectConfig {
             joiner_args: Vec::new(),
         }
     }
+}
+
+/// Multi-process physical-LAN tournament orchestration settings.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TournamentConfig {
+    pub local_ip: IpAddr,
+    pub port: u16,
+    pub local_players: u8,
+    pub remote_players: u8,
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
+    #[serde(default = "default_max_runs")]
+    pub max_runs: u32,
+    #[serde(default = "default_tournament_stagger_ms")]
+    pub stagger_ms: u64,
+    pub ready_marker: String,
+    pub pass_marker: String,
+    #[serde(default = "default_tournament_artifact_dir")]
+    pub artifact_dir: PathBuf,
+    pub host_args: Vec<String>,
+    pub joiner_args: Vec<String>,
 }
 
 /// Android emulator + APK driving for the `android-1v1` runner.
@@ -415,6 +439,14 @@ fn default_direct_artifact_dir() -> PathBuf {
     PathBuf::from("logs/fragpipe/direct-1v1")
 }
 
+fn default_tournament_artifact_dir() -> PathBuf {
+    PathBuf::from("logs/fragpipe/direct-tournament")
+}
+
+fn default_tournament_stagger_ms() -> u64 {
+    800
+}
+
 fn default_internet_pass_marker() -> String {
     "GAME OVER".into()
 }
@@ -492,6 +524,7 @@ mod tests {
         .unwrap();
         assert_eq!(config.game.name, "game");
         assert!(config.android.is_none());
+        assert!(config.tournament.is_none());
         assert!(config.remote.is_empty());
     }
 
@@ -743,6 +776,34 @@ mod tests {
         )
         .unwrap();
         assert!(config.remote[0].restricted);
+    }
+
+    #[test]
+    fn tournament_config_deserializes() {
+        let config: Config = toml::from_str(
+            r#"
+            [game]
+            binary = "game"
+            [tournament]
+            local_ip = "10.10.0.1"
+            port = 27100
+            local_players = 4
+            remote_players = 4
+            ready_marker = "ready"
+            pass_marker = "complete"
+            host_args = ["--host"]
+            joiner_args = ["--join", "{local_ip}:{port}", "{index}"]
+            "#,
+        )
+        .unwrap();
+        let tournament = config.tournament.unwrap();
+        assert_eq!(tournament.local_players, 4);
+        assert_eq!(tournament.remote_players, 4);
+        assert_eq!(tournament.stagger_ms, 800);
+        assert_eq!(
+            tournament.artifact_dir,
+            PathBuf::from("logs/fragpipe/direct-tournament")
+        );
     }
 
     #[test]

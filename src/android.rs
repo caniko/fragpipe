@@ -213,7 +213,41 @@ impl<'a> AndroidDevice<'a> {
         Ok(())
     }
 
+    fn lock_landscape(&self, dry_run: bool) -> Result<()> {
+        let adb = self.adb_display()?;
+        println!("[android] {adb} shell wm user-rotation lock 1");
+        if dry_run {
+            return Ok(());
+        }
+        let wm = self
+            .adb_command()?
+            .args(["shell", "wm", "user-rotation", "lock", "1"])
+            .status()
+            .with_context(|| format!("adb wm user-rotation failed at {adb}"))?;
+        if wm.success() {
+            return Ok(());
+        }
+        println!("[android] wm user-rotation unsupported, using settings fallback");
+        for args in landscape_settings_fallback() {
+            println!("[android] {adb} shell {}", args.join(" "));
+            let status = self
+                .adb_command()?
+                .arg("shell")
+                .args(*args)
+                .status()
+                .with_context(|| format!("adb {} failed at {adb}", args.join(" ")))?;
+            if !status.success() {
+                bail!(
+                    "landscape lock failed: wm {wm}; {} {status}",
+                    args.join(" ")
+                );
+            }
+        }
+        Ok(())
+    }
+
     fn start_activity(&self, dry_run: bool) -> Result<()> {
+        self.lock_landscape(dry_run)?;
         let adb = self.adb_display()?;
         let component = format!("{}/{}", self.cfg.package_name, self.cfg.activity_name);
         println!("[android] am start -n {component}");
@@ -400,6 +434,13 @@ pub fn capture_screenshot(cfg: &AndroidConfig, path: &Path, dry_run: bool) -> Re
     AndroidDevice::new(cfg).capture_screenshot(path, dry_run)
 }
 
+fn landscape_settings_fallback() -> &'static [&'static [&'static str]] {
+    &[
+        &["settings", "put", "system", "accelerometer_rotation", "0"],
+        &["settings", "put", "system", "user_rotation", "1"],
+    ]
+}
+
 fn parse_png_size(data: &[u8]) -> Option<(u32, u32)> {
     let png_header = b"\x89PNG\r\n\x1a\n";
     if data.len() < 24 || !data.starts_with(png_header) || &data[12..16] != b"IHDR" {
@@ -581,6 +622,17 @@ mod tests {
                 .to_string_lossy()
                 .contains(&std::process::id().to_string()),
             "tempfile name should include the pid for collision avoidance"
+        );
+    }
+
+    #[test]
+    fn landscape_settings_fallback_disables_accel_and_locks_90() {
+        assert_eq!(
+            landscape_settings_fallback(),
+            &[
+                ["settings", "put", "system", "accelerometer_rotation", "0"].as_slice(),
+                ["settings", "put", "system", "user_rotation", "1"].as_slice(),
+            ]
         );
     }
 

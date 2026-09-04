@@ -422,6 +422,20 @@ struct DirectRunInput {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct DirectTournamentInput {
+    #[serde(flatten)]
+    common: CommonInput,
+    /// Remote peer name from the config ([[remote]] section).
+    remote: String,
+    /// Reachable local IP for remote tournament peers to dial.
+    #[serde(default)]
+    local_ip: Option<String>,
+    /// Skip binary/assets deployment.
+    #[serde(default)]
+    no_deploy: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct InternetRunInput {
     #[serde(flatten)]
     common: CommonInput,
@@ -1019,6 +1033,31 @@ impl FragpipeMcp {
         }
         if input.headless.unwrap_or(false) {
             args.push("--headless".into());
+        }
+        let total_timeout = timeout.saturating_mul(max_runs as u64).saturating_add(120);
+        let (output, _) = self.run_fragpipe(&input.common, args, total_timeout)?;
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(
+        description = "Run a bare-metal multi-process LAN tournament through fragpipe over SSH."
+    )]
+    fn repeat_direct_tournament(
+        &self,
+        Parameters(input): Parameters<DirectTournamentInput>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let max_runs = input.common.max_runs.unwrap_or(1).min(50);
+        let timeout = input.common.timeout.unwrap_or(600);
+        let mut args = vec!["direct-tournament".to_string()];
+        push_common_fragpipe_args(&mut args, &input.common, max_runs, timeout);
+        args.push("--remote".into());
+        args.push(input.remote);
+        if let Some(local_ip) = input.local_ip {
+            args.push("--local-ip".into());
+            args.push(local_ip);
+        }
+        if input.no_deploy.unwrap_or(false) {
+            args.push("--no-deploy".into());
         }
         let total_timeout = timeout.saturating_mul(max_runs as u64).saturating_add(120);
         let (output, _) = self.run_fragpipe(&input.common, args, total_timeout)?;

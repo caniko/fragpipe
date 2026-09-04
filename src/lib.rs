@@ -14,7 +14,10 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 
-use direct::{DirectRunOptions, OutputFormat as DirectOutputFormat, run_direct_1v1};
+use direct::{
+    DirectRunOptions, OutputFormat as DirectOutputFormat, TournamentRunOptions, run_direct_1v1,
+    run_direct_tournament,
+};
 use runner::{
     AndroidDoctorOptions, AndroidRunOptions, AndroidUiRunOptions, InternetRunOptions, OutputFormat,
     ShipOptions, WebRtcRunOptions, run_android_1v1, run_android_doctor, run_android_ui,
@@ -40,6 +43,9 @@ enum Commands {
     /// Run a physical-peer LAN/UDP 1v1 smoke test through SSH.
     #[command(name = "direct-1v1")]
     Direct1v1(Direct1v1Args),
+    /// Run a multi-process physical-peer LAN tournament through SSH.
+    #[command(name = "direct-tournament")]
+    DirectTournament(DirectTournamentArgs),
     /// Run the forced-relay internet 1v1 smoke test.
     #[command(name = "internet-1v1")]
     Internet1v1(Internet1v1Args),
@@ -265,6 +271,49 @@ struct Direct1v1Args {
 }
 
 #[derive(Debug, Parser)]
+struct DirectTournamentArgs {
+    /// Project config path.
+    #[arg(long, default_value = "fragpipe.toml")]
+    config: PathBuf,
+
+    /// Remote peer name from the config.
+    #[arg(long, required = true)]
+    remote: String,
+
+    /// Number of test runs.
+    #[arg(long)]
+    max_runs: Option<u32>,
+
+    /// Per-run timeout in seconds.
+    #[arg(long)]
+    timeout: Option<u64>,
+
+    /// Stop after the first failed run.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    stop_on_failure: bool,
+
+    /// Skip the configured build command.
+    #[arg(long)]
+    no_build: bool,
+
+    /// Skip binary/assets deployment.
+    #[arg(long)]
+    no_deploy: bool,
+
+    /// Reachable local IP the remote peers should dial.
+    #[arg(long)]
+    local_ip: Option<IpAddr>,
+
+    /// Print commands without launching or SSHing.
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Output format.
+    #[arg(long, default_value = "text")]
+    output_format: CliOutputFormat,
+}
+
+#[derive(Debug, Parser)]
 struct Android1v1Args {
     /// Project config path.
     #[arg(long, default_value = "fragpipe.toml")]
@@ -440,6 +489,21 @@ pub fn run(cli: Cli) -> Result<()> {
             },
             transport: Some(args.transport),
         }),
+        Commands::DirectTournament(args) => run_direct_tournament(TournamentRunOptions {
+            config_path: args.config,
+            remote: args.remote,
+            max_runs: args.max_runs,
+            timeout_secs: args.timeout,
+            stop_on_failure: args.stop_on_failure,
+            no_build: args.no_build,
+            no_deploy: args.no_deploy,
+            local_ip: args.local_ip,
+            dry_run: args.dry_run,
+            output_format: match args.output_format {
+                CliOutputFormat::Text => DirectOutputFormat::Text,
+                CliOutputFormat::Jsonl => DirectOutputFormat::Jsonl,
+            },
+        }),
         Commands::Internet1v1(args) => run_internet_1v1(InternetRunOptions {
             config_path: args.config,
             max_runs: args.max_runs,
@@ -568,6 +632,40 @@ mod tests {
             assert!(matches!(args.output_format, CliOutputFormat::Jsonl));
         } else {
             panic!("expected Direct1v1 variant");
+        }
+    }
+
+    #[test]
+    fn direct_tournament_forwards_flags() {
+        let cli = Cli::try_parse_from([
+            "fragpipe",
+            "direct-tournament",
+            "--remote",
+            "nomad",
+            "--max-runs",
+            "3",
+            "--timeout",
+            "600",
+            "--no-build",
+            "--no-deploy",
+            "--local-ip",
+            "10.10.0.1",
+            "--dry-run",
+            "--output-format",
+            "jsonl",
+        ])
+        .unwrap();
+        if let Commands::DirectTournament(args) = cli.command {
+            assert_eq!(args.remote, "nomad");
+            assert_eq!(args.max_runs, Some(3));
+            assert_eq!(args.timeout, Some(600));
+            assert!(args.no_build);
+            assert!(args.no_deploy);
+            assert_eq!(args.local_ip, Some("10.10.0.1".parse().unwrap()));
+            assert!(args.dry_run);
+            assert!(matches!(args.output_format, CliOutputFormat::Jsonl));
+        } else {
+            panic!("expected DirectTournament variant");
         }
     }
 

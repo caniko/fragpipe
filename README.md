@@ -11,7 +11,7 @@ Bare-metal multiplayer and Android device test orchestration.
 Fragpipe owns local, bare-metal, SSH, and Android-device smoke testing for
 projects that can expose deterministic command-line launch modes. It does not
 replace cluster harnesses such as steampipe; those remain better suited for VM,
-Steam, and tournament orchestration.
+Steam, chaos, and isolated-host orchestration.
 
 ## WebRTC 1v1
 
@@ -44,6 +44,21 @@ without killing unrelated games.
 Each non-dry run also preserves `logs/fragpipe/direct-1v1/run-NN/` with the
 local listener log, remote log tail, and JSON result report. Override this
 directory with `[direct].artifact_dir` when a project keeps evidence elsewhere.
+
+## Direct LAN Tournament
+
+`direct-tournament` runs one local tournament coordinator, additional local
+players, and multiple players on one SSH peer. The project config owns the
+player split and arguments. Every process must reach the configured completion
+marker and exit successfully.
+
+```bash
+fragpipe direct-tournament --config fragpipe.toml --remote nomad --max-runs 1
+```
+
+Remote tournament players use distinct PID and log files, so cleanup only
+stops processes belonging to that run. Complete per-player logs and the JSON
+report are preserved below `[tournament].artifact_dir`.
 
 ### Restricted SSH peers
 
@@ -94,18 +109,25 @@ stores logcat plus a JSON report:
 fragpipe android-ui --config examples/chessbender.toml --max-runs 1
 ```
 
-For the semantic visual matrix, set `android.visual_fixtures` and select
-`all` or a glob. Each fixture is written to `launch_config_path` and the
-app must acknowledge it before fragpipe accepts the screenshot:
+For the semantic visual matrix, select the explicit fixture catalog (or a
+glob). Each fixture is written to the Android launch contract and the app must
+acknowledge it before fragpipe accepts the screenshot:
 
 ```bash
 fragpipe android-ui --config examples/chessbender.toml --visual-fixtures all
 fragpipe android-ui --config examples/chessbender.toml --visual-fixtures 'battle_*'
 ```
 
-A fixture is not considered covered merely because it has a name: the app
-acknowledgement is required. Optional `android.image_validator` is an argv
-template with `{image}` and `{fixture}` tokens, run after each screenshot.
+The current catalog is `main_menu`, `settings`, `game_browser`,
+`quick_match`, `host_lobby`, `awaiting_room`, `chat`, `battle_hud`,
+`tactics_draft`, `board_formation`, `game_over`, and
+`android_steam_unavailable`. A fixture is not considered covered merely
+because it has a name: the app acknowledgement and the downstream visual
+rubric evidence manifest are required.
+
+If `launch_config_path` is customized, fragpipe also mirrors the fixture
+request to the canonical `/data/local/tmp/chessbender-launch.json` path used
+by the Regicide client, so fixture selection cannot silently disappear.
 
 Use `android-doctor` to validate SDK, adb, APK, target, package, and activity
 configuration before running a loop:

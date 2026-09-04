@@ -203,6 +203,7 @@ WEBRTC_JOIN_ADDR=/ip4/10.88.0.1/udp/27200/webrtc-direct/certhash/uEiHash
             process: ProcessConfig::default(),
             internet: InternetConfig::default(),
             direct: DirectConfig::default(),
+            tournament: None,
             webrtc: WebRtcConfig {
                 listener_args: vec![
                     "--listen".into(),

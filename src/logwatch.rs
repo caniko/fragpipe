@@ -20,12 +20,6 @@ pub fn read_lossy(path: &Path) -> String {
 }
 
 pub fn classify_log<'a>(process: &'a ProcessConfig, log: &str) -> Option<LogSignal<'a>> {
-    for marker in &process.pass_markers {
-        if log.contains(marker) {
-            return Some(LogSignal::Pass(marker.as_str()));
-        }
-    }
-
     for marker in &process.fatal_markers {
         if marker == "Graceful shutdown: exit_code=" {
             if log.contains(marker) && !log.contains("Graceful shutdown: exit_code=0") {
@@ -33,6 +27,12 @@ pub fn classify_log<'a>(process: &'a ProcessConfig, log: &str) -> Option<LogSign
             }
         } else if log.contains(marker) {
             return Some(LogSignal::Fatal(marker.as_str()));
+        }
+    }
+
+    for marker in &process.pass_markers {
+        if log.contains(marker) {
+            return Some(LogSignal::Pass(marker.as_str()));
         }
     }
 
@@ -92,6 +92,15 @@ mod tests {
         assert_eq!(
             classify_log(&cfg, "PASS: test passed"),
             Some(LogSignal::Pass("PASS"))
+        );
+    }
+
+    #[test]
+    fn fatal_marker_wins_over_an_earlier_pass_marker() {
+        let cfg = test_process_config();
+        assert_eq!(
+            classify_log(&cfg, "GAME OVER\n[FATAL] later failure"),
+            Some(LogSignal::Fatal("[FATAL]"))
         );
     }
 
