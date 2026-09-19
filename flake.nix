@@ -14,7 +14,7 @@
     # downstream consumers reach steampipe THROUGH fragpipe rather than
     # depending on it directly.
     steampipe = {
-      url = "git+ssh://git@codeberg.org/caniko/steampipe.git";
+      url = "git+https://github.com/caniko/steampipe.git";
       inputs.harbor-rs.follows = "harbor-rs";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.rust-overlay.follows = "rust-overlay";
