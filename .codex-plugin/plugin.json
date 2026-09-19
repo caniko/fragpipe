@@ -7,8 +7,8 @@
     "email": "caniko@users.noreply.codeberg.org",
     "url": "https://codeberg.org/caniko"
   },
-  "homepage": "https://codeberg.org/caniko/fragpipe",
-  "repository": "https://codeberg.org/caniko/fragpipe",
+  "homepage": "https://github.com/caniko/fragpipe",
+  "repository": "https://github.com/caniko/fragpipe",
   "license": "MIT",
   "keywords": ["fragpipe", "mcp", "android", "webrtc", "fix-loop"],
   "skills": "./skills/",
@@ -20,7 +20,7 @@
     "developerName": "caniko",
     "category": "Developer Tools",
     "capabilities": ["Interactive", "Write"],
-    "websiteURL": "https://codeberg.org/caniko/fragpipe",
+    "websiteURL": "https://github.com/caniko/fragpipe",
     "defaultPrompt": [
       "Run a fragpipe Android UI smoke test.",
       "Run the cross-platform fragpipe matrix.",

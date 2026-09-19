@@ -176,7 +176,7 @@ WebRTC, Android UI, Android doctor, and cross-platform matrix runs.
 Run the packaged MCP server with:
 
 ```bash
-nix run git+ssh://git@codeberg.org/caniko/fragpipe.git#fragpipe-mcp
+nix run git+ssh://git@github.com/caniko/fragpipe.git#fragpipe-mcp
 ```
 
 The plugin manifest lives at `.codex-plugin/plugin.json`, the MCP server config

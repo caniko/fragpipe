@@ -1915,11 +1915,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1789815852,
-        "narHash": "sha256-R3uaau01XZwZctOHAc1Kb51QrqtgzRRtgS3jJPqymdM=",
+        "lastModified": 1789815992,
+        "narHash": "sha256-PUF5iqP4ROMxlADgJJQ28rXGiREdnwRWpDpwhUu8UK4=",
         "ref": "refs/heads/trunk",
-        "rev": "9bb3333a8534d254924951b8ba51a28d8fd0bfdb",
-        "revCount": 231,
+        "rev": "ac7680bd7d0e597ed8d624ea34b198e04a4458f7",
+        "revCount": 232,
         "type": "git",
         "url": "https://github.com/caniko/steampipe.git"
       },
