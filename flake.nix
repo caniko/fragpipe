@@ -156,6 +156,24 @@
         fmt = craneLib.cargoFmt {
           inherit src;
         };
+        # Fail if flake inputs ever point at the retired Codeberg/Codefloe
+        # mirrors again (fleet migrated to github.com/caniko/*).
+        # sourceUrl package metadata is excluded: informational only, not fetched.
+        host-pinning =
+          let
+            # Split across literals so this file never matches its own pattern.
+            staleHosts = "cod" + "eberg|cod" + "efloe";
+          in
+          pkgs.runCommand "fragpipe-host-pinning" {} ''
+            if ${pkgs.lib.getExe pkgs.ripgrep} -v "sourceUrl" ${./flake.nix} ${./flake.lock} \
+              | ${pkgs.lib.getExe pkgs.ripgrep} -q "${staleHosts}"; then
+              echo "ERROR: retired forge host in flake inputs:" >&2
+              ${pkgs.lib.getExe pkgs.ripgrep} -v "sourceUrl" ${./flake.nix} ${./flake.lock} \
+                | ${pkgs.lib.getExe pkgs.ripgrep} -n "${staleHosts}" >&2 || true
+              exit 1
+            fi
+            touch $out
+          '';
       };
 
       devShells.default = craneLib.devShell {
