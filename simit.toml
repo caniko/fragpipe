@@ -1,7 +1,7 @@
 [ci]
-runner = "codefloe-global"
-step_runners = { cargo-clippy = "codeberg-small", cargo-doc = "codeberg-small", cargo-fmt = "codeberg-tiny", cargo-package = "codeberg-medium", cargo-test = "codeberg-medium", quality-tools = "codeberg-small" }
-provider = "crow"
-platform = "forgejo"
+runner = "ubuntu-24.04"
+step_runners = { cargo-clippy = "ubuntu-24.04", cargo-doc = "ubuntu-24.04", cargo-fmt = "ubuntu-24.04", cargo-package = "ubuntu-24.04", cargo-test = "ubuntu-24.04", quality-tools = "ubuntu-24.04" }
+provider = "actions"
+platform = "github"
 publish_crates = true
 runtime = "nix"
