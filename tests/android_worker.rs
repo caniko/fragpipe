@@ -109,7 +109,6 @@ fn wait_for(path: &Path, expected_free: bool) {
 
 fn hold_lock(path: &Path) -> Child {
     let child = Command::new("flock")
-        .arg("-n")
         .arg(path)
         .args(["sleep", "30"])
         .spawn()
