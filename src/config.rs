@@ -312,6 +312,9 @@ pub struct RemotePeer {
     pub remote_dir: String,
     #[serde(default)]
     pub restricted: bool,
+    /// Require this active, unlocked COSMIC account, including for headless runs.
+    #[serde(default)]
+    pub session_user: Option<String>,
     #[serde(default = "default_remote_log")]
     pub log_file: String,
     #[serde(default = "default_remote_pid_file")]

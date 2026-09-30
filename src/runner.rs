@@ -309,6 +309,9 @@ pub fn run_webrtc_1v1(options: WebRtcRunOptions) -> Result<()> {
     let timeout = Duration::from_secs(options.timeout_secs.unwrap_or(config.webrtc.timeout_secs));
     let port = options.webrtc_port.unwrap_or(config.webrtc.port);
     let local_ip = options.local_ip.unwrap_or(config.webrtc.local_ip);
+    if let Some(remote) = remote {
+        ssh::ensure_remote_ready(remote, options.dry_run)?;
+    }
 
     if !options.no_build {
         run_build(&config, options.dry_run)?;
@@ -363,6 +366,9 @@ fn run_one(
     timeout: Duration,
     dry_run: bool,
 ) -> Result<RunReport> {
+    if let Some(remote) = remote {
+        ssh::ensure_remote_ready(remote, dry_run)?;
+    }
     let started = Instant::now();
     let result = match remote {
         Some(remote) => run_one_remote(config, remote, port, local_ip, timeout, dry_run),
@@ -914,6 +920,9 @@ pub fn run_ship(options: ShipOptions) -> Result<()> {
     let config = load_config(&options.config_path)?;
     println!("Fragpipe project: {}", config.game.name);
     let remote = select_remote(&config, &options.remote)?;
+    if options.restart {
+        ssh::ensure_remote_ready(remote, options.dry_run)?;
+    }
 
     if !options.no_build {
         println!("==> Building...");
@@ -926,6 +935,7 @@ pub fn run_ship(options: ShipOptions) -> Result<()> {
     }
 
     if options.restart {
+        ssh::ensure_remote_ready(remote, options.dry_run)?;
         println!("==> Restarting on {}...", remote.name);
         ssh::stop_remote(&config, remote, options.dry_run)?;
         let args = options
