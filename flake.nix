@@ -2,11 +2,11 @@
   description = "Bare-metal multiplayer and Android device test orchestration";
 
   inputs = {
-    harbor-rs.url = "git+https://github.com/caniko/harbor-rs.git?ref=trunk&rev=7a3328e186258dca31f9801227bc4e6fd8db4f36";
+    harbor.url = "git+https://github.com/caniko/harbor.git?ref=feat/harbor-monorepo-components&rev=e8b1996580e4ecd51dd402edf4a16d9df88e3a1b";
 
-    nixpkgs.follows = "harbor-rs/nixpkgs";
-    rust-overlay.follows = "harbor-rs/rust-overlay";
-    crane.follows = "harbor-rs/crane";
+    nixpkgs.follows = "harbor/nixpkgs";
+    rust-overlay.follows = "harbor/rust-overlay";
+    crane.follows = "harbor/crane";
     flake-utils.url = "github:numtide/flake-utils";
 
     # The steampipe cluster harness (cluster-ctl + lib.mkTestCluster). fragpipe
@@ -25,7 +25,7 @@
   outputs = {
     self,
     nixpkgs,
-    harbor-rs,
+    harbor,
     flake-utils,
     rust-overlay,
     steampipe,
@@ -84,13 +84,30 @@
       };
     }
     // flake-utils.lib.eachDefaultSystem (system: let
-      pkgs = import nixpkgs {
-        inherit system;
-        overlays = [(import rust-overlay)];
-      };
+      pkgs =
+        import (
+          if system == "x86_64-darwin"
+          then harbor.inputs.nixpkgs-darwin
+          else nixpkgs
+        ) {
+          inherit system;
+          overlays = [(import rust-overlay)];
+        };
 
-      toolchain = harbor-rs.lib.mkToolchain {inherit pkgs; toolchainProfile = "nightly";};
+      toolchain = harbor.lib.rust.mkToolchain {
+        inherit pkgs;
+        toolchainProfile = "nightly";
+      };
       inherit (toolchain) craneLib;
+      treefmtEval = harbor.inputs.treefmt-nix.lib.evalModule pkgs {
+        imports = [harbor.treefmtModules.core-nix harbor.treefmtModules.rust-rust];
+        projectRootFile = "flake.nix";
+        programs.rustfmt.package = toolchain.rustToolchain;
+      };
+      opencodeLspShell = harbor.inputs.nix-opencode-lsp.lib.mkShell {
+        inherit pkgs;
+        rustAnalyzer = toolchain.rustToolchain;
+      };
 
       src = craneLib.cleanCargoSource ./.;
 
@@ -120,13 +137,16 @@
         '';
       };
     in {
-      packages = {
-        default = fragpipePackage;
-        fragpipe = fragpipePackage;
-        fragpipe-mcp = fragpipeMcpPackage;
-        # Re-exported from steampipe so consumers pull cluster-ctl via fragpipe.
-        cluster-ctl = steampipe.packages.${system}.default;
-      };
+      packages =
+        {
+          default = fragpipePackage;
+          fragpipe = fragpipePackage;
+          fragpipe-mcp = fragpipeMcpPackage;
+        }
+        // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
+          # Steampipe supports x86_64 Linux, where consumers pull it via fragpipe.
+          cluster-ctl = steampipe.packages.${system}.default;
+        };
 
       apps = {
         default = {
@@ -146,6 +166,7 @@
       checks = {
         default = fragpipePackage;
         fragpipe-mcp = rawFragpipeMcpPackage;
+        formatting = treefmtEval.config.build.check self;
 
         clippy = craneLib.cargoClippy (commonArgs
           // {
@@ -159,11 +180,10 @@
         # Fail if flake inputs ever point at the retired Codeberg/Codefloe
         # mirrors again (fleet migrated to github.com/caniko/*).
         # sourceUrl package metadata is excluded: informational only, not fetched.
-        host-pinning =
-          let
-            # Split across literals so this file never matches its own pattern.
-            staleHosts = "cod" + "eberg|cod" + "efloe";
-          in
+        host-pinning = let
+          # Split across literals so this file never matches its own pattern.
+          staleHosts = "cod" + "eberg|cod" + "efloe";
+        in
           pkgs.runCommand "fragpipe-host-pinning" {} ''
             if ${pkgs.lib.getExe pkgs.ripgrep} -v "sourceUrl" ${./flake.nix} ${./flake.lock} \
               | ${pkgs.lib.getExe pkgs.ripgrep} -q "${staleHosts}"; then
@@ -176,11 +196,14 @@
           '';
       };
 
+      formatter = treefmtEval.config.build.wrapper;
       devShells.default = craneLib.devShell {
         checks = self.checks.${system};
+        inputsFrom = [opencodeLspShell];
         packages = with pkgs; [
           cargo-nextest
           rust-analyzer
+          treefmtEval.config.build.wrapper
         ];
       };
     });
