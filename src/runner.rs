@@ -16,7 +16,9 @@ use crate::config::{
     select_remote,
 };
 use crate::logwatch::{LogSignal, classify_log, classify_non_success_log, read_lossy};
-use crate::process::{kill_child, remove_if_exists, run_build, run_shell_command, spawn_logged};
+use crate::process::{
+    kill_child, remove_if_exists, run_build, run_shell_command, run_tests, spawn_logged,
+};
 use crate::ssh;
 use crate::webrtc::{joiner_args, listener_args, parse_join_addr_prefer_ip, rewrite_join_addr};
 
@@ -932,6 +934,7 @@ pub struct ShipOptions {
     pub config_path: PathBuf,
     pub no_build: bool,
     pub no_deploy: bool,
+    pub require_green: bool,
     pub remote: String,
     pub restart: bool,
     pub launch_args: Option<Vec<String>>,
@@ -942,6 +945,10 @@ pub fn run_ship(options: ShipOptions) -> Result<()> {
     let config = load_config(&options.config_path)?;
     println!("Fragpipe project: {}", config.game.name);
     let remote = select_remote(&config, &options.remote)?;
+
+    if options.require_green {
+        run_tests(&config, options.dry_run)?;
+    }
 
     if !options.no_build {
         println!("==> Building...");
@@ -1608,6 +1615,7 @@ mod tests {
             remote: "test-peer".into(),
             no_build: false,
             no_deploy: false,
+            require_green: false,
             restart: true,
             launch_args: Some(vec!["--join".into(), "addr".into()]),
             dry_run: true,
@@ -1615,6 +1623,47 @@ mod tests {
         // run_ship should succeed in dry-run mode
         crate::runner::run_ship(options).unwrap();
         drop(dir);
+    }
+
+    #[test]
+    fn run_ship_runs_tests_only_with_require_green() {
+        let dir = tempfile::tempdir().unwrap();
+        let ship = |test_command: &str, require_green: bool| {
+            let config_path = dir.path().join("ship.toml");
+            std::fs::write(
+                &config_path,
+                format!(
+                    r#"
+                    [game]
+                    binary = "game"
+                    {test_command}
+                    [[remote]]
+                    name = "test-peer"
+                    host = "test-host"
+                    remote_dir = "/remote"
+                    "#
+                ),
+            )
+            .unwrap();
+            crate::runner::run_ship(crate::runner::ShipOptions {
+                config_path,
+                remote: "test-peer".into(),
+                no_build: true,
+                no_deploy: true,
+                require_green,
+                restart: false,
+                launch_args: None,
+                dry_run: false,
+            })
+        };
+
+        // A failing test command never blocks a default ship.
+        ship(r#"test_command = "false""#, false).unwrap();
+        // --require-green runs it and aborts on failure.
+        assert!(ship(r#"test_command = "false""#, true).is_err());
+        ship(r#"test_command = "true""#, true).unwrap();
+        // --require-green without a test command is a config error.
+        assert!(ship("", true).is_err());
     }
 
     fn create_test_android_cfg() -> AndroidConfig {

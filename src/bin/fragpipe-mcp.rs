@@ -564,6 +564,9 @@ struct ShipInput {
     /// Skip SSH deploy (binary/assets rsync).
     #[serde(default)]
     no_deploy: Option<bool>,
+    /// Run [game].test_command first and abort if it fails (default false).
+    #[serde(default)]
+    require_green: Option<bool>,
     /// Stop the old process and launch a new instance after deploy.
     #[serde(default)]
     restart: Option<bool>,
@@ -1164,6 +1167,9 @@ impl FragpipeMcp {
         }
         if input.no_deploy.unwrap_or(false) {
             args.push("--no-deploy".into());
+        }
+        if input.require_green.unwrap_or(false) {
+            args.push("--require-green".into());
         }
         if input.restart.unwrap_or(false) {
             args.push("--restart".into());
