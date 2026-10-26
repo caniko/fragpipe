@@ -5,6 +5,7 @@ provider = "actions"
 platform = "github"
 publish_crates = true
 runtime = "nix"
+publish_strategy = "members"
 
 # Linux closures consumed by canix (via regicide), published to the public
 # canix cache on trunk pushes only (secret ATTIC_TOKEN). Pull requests build
