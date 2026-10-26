@@ -14,6 +14,13 @@ pub fn run_build(config: &Config, dry_run: bool) -> Result<()> {
     run_shell_command("Building", command, project_root(config), dry_run)
 }
 
+pub fn run_tests(config: &Config, dry_run: bool) -> Result<()> {
+    let Some(command) = config.game.test_command.as_deref() else {
+        bail!("--require-green needs [game].test_command in the fragpipe config");
+    };
+    run_shell_command("Testing", command, project_root(config), dry_run)
+}
+
 pub fn run_shell_command(label: &str, command: &str, cwd: &Path, dry_run: bool) -> Result<()> {
     println!("==> {label}: {command}");
     if dry_run {

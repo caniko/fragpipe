@@ -139,6 +139,9 @@ pub struct GameConfig {
     pub binary: PathBuf,
     #[serde(default)]
     pub build_command: Option<String>,
+    /// Run by `ship --require-green` before building; never run otherwise.
+    #[serde(default)]
+    pub test_command: Option<String>,
     #[serde(default)]
     pub project_root: Option<PathBuf>,
     #[serde(default)]

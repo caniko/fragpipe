@@ -192,6 +192,7 @@ WEBRTC_JOIN_ADDR=/ip4/10.88.0.1/udp/27200/webrtc-direct/certhash/uEiHash
                 name: "test".into(),
                 binary: PathBuf::from("game"),
                 build_command: None,
+                test_command: None,
                 project_root: None,
                 assets_dir: None,
                 listener_log: PathBuf::from("listener.log"),

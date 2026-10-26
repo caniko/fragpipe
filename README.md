@@ -60,6 +60,16 @@ Remote tournament players use distinct PID and log files, so cleanup only
 stops processes belonging to that run. Complete per-player logs and the JSON
 report are preserved below `[tournament].artifact_dir`.
 
+## Ship
+
+`ship` builds with `[game].build_command`, deploys to a peer, and with
+`--restart` relaunches it. Tests never gate a ship by default. Pass
+`--require-green` to run `[game].test_command` first and abort on failure:
+
+```bash
+fragpipe ship --remote nomad --restart --require-green
+```
+
 ### Restricted SSH peers
 
 Set `restricted = true` on a remote that authenticates through an OpenSSH

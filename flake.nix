@@ -128,20 +128,38 @@
         cluster-ctl = steampipe.packages.${system}.default;
       };
 
-      apps = {
-        default = {
-          type = "app";
-          program = "${fragpipePackage}/bin/fragpipe";
+      apps =
+        {
+          default = {
+            type = "app";
+            program = "${fragpipePackage}/bin/fragpipe";
+          };
+          fragpipe = {
+            type = "app";
+            program = "${fragpipePackage}/bin/fragpipe";
+          };
+          fragpipe-mcp = {
+            type = "app";
+            program = "${fragpipeMcpPackage}/bin/fragpipe-mcp";
+          };
+        }
+        // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          # Simit prebuild publication on trunk (secret ATTIC_TOKEN). Linux
+          # outputs only: the packages canix consumes, pushed to the public
+          # canix cache.
+          push-flake-inputs = harbor-rs.lib.mkAtticPush {
+            inherit pkgs;
+            flake = ".";
+            paths = [fragpipePackage fragpipeMcpPackage];
+            adapter = harbor-rs.lib.mkAdapter {
+              attic = {
+                endpoint = "https://attic.candee.baby";
+                cache = "canix";
+                tokenEnvVar = "ATTIC_TOKEN";
+              };
+            };
+          };
         };
-        fragpipe = {
-          type = "app";
-          program = "${fragpipePackage}/bin/fragpipe";
-        };
-        fragpipe-mcp = {
-          type = "app";
-          program = "${fragpipeMcpPackage}/bin/fragpipe-mcp";
-        };
-      };
 
       checks = {
         default = fragpipePackage;

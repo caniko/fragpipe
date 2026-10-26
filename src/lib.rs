@@ -108,6 +108,11 @@ struct ShipArgs {
     #[arg(long)]
     no_deploy: bool,
 
+    /// Run [game].test_command first and abort the ship if it fails.
+    /// Off by default: shipping is never gated on tests unless asked.
+    #[arg(long)]
+    require_green: bool,
+
     /// Stop the old process and launch a new instance after deploy.
     #[arg(long)]
     restart: bool,
@@ -501,6 +506,7 @@ pub fn run(cli: Cli) -> Result<()> {
             remote: args.remote,
             no_build: args.no_build,
             no_deploy: args.no_deploy,
+            require_green: args.require_green,
             restart: args.restart,
             launch_args: args.launch_args,
             dry_run: args.dry_run,
@@ -932,6 +938,7 @@ mod tests {
             "atlas",
             "--no-build",
             "--no-deploy",
+            "--require-green",
             "--restart",
             "--dry-run",
             "--launch-args",
@@ -944,6 +951,7 @@ mod tests {
             assert_eq!(args.remote, "atlas");
             assert!(args.no_build);
             assert!(args.no_deploy);
+            assert!(args.require_green);
             assert!(args.restart);
             assert_eq!(
                 args.launch_args,
@@ -963,6 +971,7 @@ mod tests {
             assert_eq!(args.remote, "nomad");
             assert!(!args.no_build);
             assert!(!args.no_deploy);
+            assert!(!args.require_green);
             assert!(!args.restart);
             assert!(args.launch_args.is_none());
             assert!(!args.dry_run);
