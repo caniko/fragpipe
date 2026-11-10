@@ -60,7 +60,8 @@ checks against retired forge hosts.
 
 ## Place in the fleet
 
-Canix pins the fragpipe flake, provisions the Atlas-to-nomad reverse-test SSH
-key through its jarvis module, and writes `fragpipe/workers.toml` from
-`canixLib.androidWorkers` for the Atlas user. It is also referenced from canix
-planning notes for autonomous QA and visual hardware work.
+Canix consumes fragpipe through its `regicide` flake input, provisions the
+Atlas-to-nomad reverse-test SSH key through its jarvis module, and writes
+`fragpipe/workers.toml` from `canixLib.androidWorkers` for the Atlas user. It is
+also referenced from canix planning notes for autonomous QA and visual hardware
+work.
