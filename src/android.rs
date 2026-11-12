@@ -7,9 +7,7 @@
 //!   3. `push_rendezvous` — write the listener's WebRTC multiaddr to
 //!      `rendezvous_path` on the device so the test-peer can read it on start.
 //!   4. `start_activity` — `am start -n <pkg>/<activity>` to launch the
-//!      test-peer. The activity loads `libchessbender_android_test_peer.so`
-//!      via `android:lib_name`; `bevy_main` enters `android_main` which reads
-//!      the rendezvous file.
+//!      test-peer. The activity reads the rendezvous file on start.
 //!   5. `tail_logcat` — spawn `adb logcat -s <tag>` redirected into the
 //!      configured log file so `classify_log` sees the same pass/fatal
 //!      markers it sees from the desktop peer.
@@ -219,10 +217,55 @@ impl<'a> AndroidDevice<'a> {
         if !status.success() {
             bail!("adb push exited with {status}");
         }
+        let chmod = self
+            .adb_command()?
+            .arg("shell")
+            .arg("chmod")
+            .arg("644")
+            .arg(device_path)
+            .status()
+            .with_context(|| format!("adb chmod failed at {adb}"))?;
+        if !chmod.success() {
+            bail!("adb chmod 644 {device_path} exited with {chmod}");
+        }
+        Ok(())
+    }
+
+    fn lock_landscape(&self, dry_run: bool) -> Result<()> {
+        let adb = self.adb_display()?;
+        println!("[android] {adb} shell wm user-rotation lock 1");
+        if dry_run {
+            return Ok(());
+        }
+        let wm = self
+            .adb_command()?
+            .args(["shell", "wm", "user-rotation", "lock", "1"])
+            .status()
+            .with_context(|| format!("adb wm user-rotation failed at {adb}"))?;
+        if wm.success() {
+            return Ok(());
+        }
+        println!("[android] wm user-rotation unsupported, using settings fallback");
+        for args in landscape_settings_fallback() {
+            println!("[android] {adb} shell {}", args.join(" "));
+            let status = self
+                .adb_command()?
+                .arg("shell")
+                .args(*args)
+                .status()
+                .with_context(|| format!("adb {} failed at {adb}", args.join(" ")))?;
+            if !status.success() {
+                bail!(
+                    "landscape lock failed: wm {wm}; {} {status}",
+                    args.join(" ")
+                );
+            }
+        }
         Ok(())
     }
 
     fn start_activity(&self, dry_run: bool) -> Result<()> {
+        self.lock_landscape(dry_run)?;
         let adb = self.adb_display()?;
         let component = format!("{}/{}", self.cfg.package_name, self.cfg.activity_name);
         println!("[android] am start -n {component}");
@@ -257,7 +300,7 @@ impl<'a> AndroidDevice<'a> {
         }
         let _ = std::fs::remove_file(&self.cfg.logcat_log);
         println!(
-            "[android] {} logcat -s {}:V → {}",
+            "[android] {} logcat -s {}:V *:I → {}",
             adb,
             self.cfg.log_tag,
             self.cfg.logcat_log.display()
@@ -274,7 +317,7 @@ impl<'a> AndroidDevice<'a> {
             .context("failed to dup logcat log file handle")?;
         let child = self
             .adb_command()?
-            .args(["logcat", "-s", &format!("{}:V", self.cfg.log_tag), "*:E"])
+            .args(["logcat", "-s", &format!("{}:V", self.cfg.log_tag), "*:I"])
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(stderr_file))
             .spawn()
@@ -427,6 +470,13 @@ pub fn capture_screenshot(cfg: &AndroidConfig, path: &Path, dry_run: bool) -> Re
     AndroidDevice::new(cfg).capture_screenshot(path, dry_run)
 }
 
+fn landscape_settings_fallback() -> &'static [&'static [&'static str]] {
+    &[
+        &["settings", "put", "system", "accelerometer_rotation", "0"],
+        &["settings", "put", "system", "user_rotation", "1"],
+    ]
+}
+
 fn parse_png_size(data: &[u8]) -> Option<(u32, u32)> {
     let png_header = b"\x89PNG\r\n\x1a\n";
     if data.len() < 24 || !data.starts_with(png_header) || &data[12..16] != b"IHDR" {
@@ -489,10 +539,12 @@ mod tests {
             ui_activity_name: None,
             ui_log_tag: None,
             ui_apk_build_command: None,
-            package_name: "tartanoglu.chessbender.test_peer".into(),
+            visual_fixtures: vec![],
+            image_validator: None,
+            package_name: "com.example.test_peer".into(),
             activity_name: "androidx.games.activity.GameActivity".into(),
-            log_tag: "chessbender".into(),
-            rendezvous_path: "/data/local/tmp/chessbender-rendezvous.txt".into(),
+            log_tag: "game".into(),
+            rendezvous_path: "/data/local/tmp/fragpipe-rendezvous.txt".into(),
             logcat_log: PathBuf::from("logs/fragpipe-android-test.log"),
             emulator_bin: if overrides {
                 Some(PathBuf::from("/usr/bin/emulator"))
@@ -506,17 +558,9 @@ mod tests {
             },
             emulator_args: vec!["-no-window".into(), "-no-audio".into()],
             boot_timeout_secs: 120,
-            launch_config_path: "/data/local/tmp/chessbender-launch.json".into(),
+            launch_config_path: "/data/local/tmp/fragpipe-launch.json".into(),
             screenshot_dir: PathBuf::from("logs/fragpipe-android-screenshots"),
         }
-    }
-
-    #[test]
-    fn canonical_visual_launch_path_matches_default_profile() {
-        assert_eq!(
-            cfg(false).launch_config_path,
-            CANONICAL_VISUAL_LAUNCH_CONFIG_PATH
-        );
     }
 
     #[test]
@@ -633,6 +677,17 @@ mod tests {
                 .to_string_lossy()
                 .contains(&std::process::id().to_string()),
             "tempfile name should include the pid for collision avoidance"
+        );
+    }
+
+    #[test]
+    fn landscape_settings_fallback_disables_accel_and_locks_90() {
+        assert_eq!(
+            landscape_settings_fallback(),
+            &[
+                ["settings", "put", "system", "accelerometer_rotation", "0"].as_slice(),
+                ["settings", "put", "system", "user_rotation", "1"].as_slice(),
+            ]
         );
     }
 

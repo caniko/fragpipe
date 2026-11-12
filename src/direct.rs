@@ -94,6 +94,7 @@ pub fn run_direct_1v1(options: DirectRunOptions) -> Result<()> {
     if port == 0 {
         bail!("direct-1v1 UDP port must be greater than zero");
     }
+    ssh::ensure_remote_ready(remote, options.dry_run)?;
 
     println!("Fragpipe project: {}", config.game.name);
     println!(
@@ -111,6 +112,7 @@ pub fn run_direct_1v1(options: DirectRunOptions) -> Result<()> {
     let mut passed = 0;
     let mut failed = 0;
     for run in 1..=max_runs {
+        ssh::ensure_remote_ready(remote, options.dry_run)?;
         println!("=== RUN {run}/{max_runs} ===");
         let context = DirectRunContext {
             config: &config,
@@ -167,6 +169,7 @@ pub fn run_direct_tournament(options: TournamentRunOptions) -> Result<()> {
     if remote.restricted {
         bail!("direct-tournament requires an unrestricted SSH peer");
     }
+    ssh::ensure_remote_ready(remote, options.dry_run)?;
 
     println!("Fragpipe project: {}", config.game.name);
     println!(
@@ -199,6 +202,7 @@ pub fn run_direct_tournament(options: TournamentRunOptions) -> Result<()> {
     for run in 1..=max_runs {
         println!("=== RUN {run}/{max_runs} ===");
         let report = run_tournament_once(&context, run);
+        // A blocked session never counts as a completed tournament run.
         emit_report(options.output_format, &report)?;
         match report.status {
             RunStatus::Pass => passed += 1,
@@ -301,6 +305,7 @@ fn run_tournament_once(context: &TournamentRunContext<'_>, run: u32) -> RunRepor
 }
 
 fn run_tournament_once_inner(context: &TournamentRunContext<'_>, run_dir: &Path) -> Result<String> {
+    ssh::ensure_remote_ready(context.remote, context.dry_run)?;
     if !context.dry_run {
         fs::create_dir_all(run_dir)
             .with_context(|| format!("failed to create {}", run_dir.display()))?;

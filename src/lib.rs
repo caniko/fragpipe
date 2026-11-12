@@ -5,6 +5,7 @@ pub mod direct;
 pub mod logwatch;
 pub mod process;
 pub mod runner;
+pub mod session;
 pub mod ssh;
 pub mod util;
 pub mod webrtc;
@@ -35,6 +36,10 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// Verify the invoking test user's active, unlocked COSMIC session.
+    SessionCheck(SessionCheckArgs),
+    /// Verify the test session and replace this process with the command.
+    SessionExec(SessionExecArgs),
     /// Build and deploy the game binary + assets to a remote peer, with optional restart.
     #[command(name = "ship")]
     Ship(ShipArgs),
@@ -69,6 +74,9 @@ enum Commands {
 
 #[derive(Debug, Parser)]
 struct SshGateArgs {
+    /// Receiver-owned graphical test-user policy (cannot be weakened by requests).
+    #[arg(long)]
+    session_user: Option<String>,
     /// Fixed directory containing every file the key may access.
     #[arg(long)]
     root: PathBuf,
@@ -88,6 +96,20 @@ struct SshGateArgs {
     /// Absolute path to the restricted rsync wrapper.
     #[arg(long)]
     rrsync: PathBuf,
+}
+
+#[derive(Debug, Parser)]
+struct SessionCheckArgs {
+    #[arg(long)]
+    user: String,
+}
+
+#[derive(Debug, Parser)]
+struct SessionExecArgs {
+    #[arg(long)]
+    user: String,
+    #[arg(required = true, trailing_var_arg = true)]
+    command: Vec<String>,
 }
 
 #[derive(Debug, Parser)]
@@ -501,6 +523,11 @@ impl From<CliOutputFormat> for OutputFormat {
 
 pub fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Commands::SessionCheck(args) => {
+            println!("{}", serde_json::to_string(&session::check(&args.user)?)?);
+            Ok(())
+        }
+        Commands::SessionExec(args) => session::exec(&args.user, &args.command),
         Commands::Ship(args) => run_ship(ShipOptions {
             config_path: args.config,
             remote: args.remote,
@@ -623,6 +650,7 @@ pub fn run(cli: Cli) -> Result<()> {
             &args.log_file,
             &args.pid_file,
             &args.rrsync,
+            args.session_user.as_deref(),
         ),
     }
 }
