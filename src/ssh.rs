@@ -20,6 +20,73 @@ const GATE_SENTINEL: &str = "FRAGPIPE_SSH_GATE_V1";
 const MAX_REQUEST_BYTES: u64 = 1024 * 1024;
 const MAX_LOG_BYTES: u64 = 1024 * 1024;
 
+/// Check before deployment, cleanup, local spawning, and each repeated run.
+pub fn ensure_remote_ready(remote: &RemotePeer, dry_run: bool) -> Result<()> {
+    let Some(user) = &remote.session_user else {
+        return Ok(());
+    };
+    if dry_run {
+        println!(
+            "readiness: {} requires unlocked test user {user}",
+            remote.name
+        );
+        return Ok(());
+    }
+    let hostname = Command::new("hostname").arg("-s").output()?;
+    if remote.name == String::from_utf8_lossy(&hostname.stdout).trim() {
+        bail!(
+            "blocked: {} is this host; run locally as {user} using fragpipe session-exec",
+            remote.name
+        );
+    }
+    let output = if remote.restricted {
+        run_gate_request(
+            remote,
+            &GateRequest::CheckSession { user: user.clone() },
+            false,
+            false,
+        )?
+    } else {
+        let command = remote_shell(&format!(
+            "fragpipe session-check --user {}",
+            shell_quote(user)
+        ));
+        let output = Command::new("timeout")
+            .args([
+                "--kill-after=1s",
+                "15s",
+                "ssh",
+                "-T",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=5",
+            ])
+            .arg(&remote.host)
+            .arg(command)
+            .output()
+            .context("blocked: remote test-session observation failed")?;
+        if !output.status.success() {
+            bail!(
+                "blocked: remote {} test user {user} is unavailable: {}",
+                remote.name,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        output.stdout
+    };
+    let info: crate::session::SessionInfo = serde_json::from_slice(&output)
+        .context("blocked: remote receiver returned no valid session readiness evidence")?;
+    if info.user != *user {
+        bail!("blocked: remote readiness belongs to another test user");
+    }
+    println!(
+        "readiness: {} user={} uid={} session={} seat={} display={}",
+        remote.name, info.user, info.uid, info.session, info.seat, info.wayland_display
+    );
+    Ok(())
+}
+
 pub fn deploy(config: &Config, remote: &RemotePeer, dry_run: bool) -> Result<()> {
     let project_root = project_root(config);
     if remote.restricted {
@@ -72,6 +139,7 @@ pub fn launch_remote(
     args: &[String],
     dry_run: bool,
 ) -> Result<()> {
+    ensure_remote_ready(remote, dry_run)?;
     if remote.restricted {
         let request = GateRequest::Launch {
             args: args.to_vec(),
@@ -120,9 +188,17 @@ fn launch_command_with_files(
 
     let remote_binary = format!("{}/{}", remote.remote_dir, binary_name);
     let remote_pid = format!("{}/{}", remote.remote_dir, pid_file);
+    let executable = match &remote.session_user {
+        Some(user) => format!(
+            "fragpipe session-exec --user {} -- {}",
+            shell_quote(user),
+            shell_quote(&remote_binary)
+        ),
+        None => shell_quote(&remote_binary),
+    };
     let run = format!(
         "{} {}; _fragpipe_status=$?; printf '\\nFRAGPIPE_REMOTE_EXIT=%s\\n' \"$_fragpipe_status\"",
-        shell_quote(&remote_binary),
+        executable,
         shell_args(args),
     );
     let command = format!(
@@ -189,6 +265,7 @@ pub fn remote_log(remote: &RemotePeer) -> Result<String> {
         .arg(command)
         .output()
         .with_context(|| format!("failed to read remote log from {}", remote.host))?;
+    ensure_success(output.status, "remote log SSH observation")?;
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
@@ -206,6 +283,7 @@ pub fn launch_remote_instance(
     args: &[String],
     dry_run: bool,
 ) -> Result<()> {
+    ensure_remote_ready(remote, dry_run)?;
     if remote.restricted {
         bail!("multiple remote processes are not supported by restricted SSH peers");
     }
@@ -416,6 +494,9 @@ fn run_gate_request(
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "kebab-case", deny_unknown_fields)]
 enum GateRequest {
+    CheckSession {
+        user: String,
+    },
     Prepare,
     Launch {
         args: Vec<String>,
@@ -457,11 +538,15 @@ pub fn run_gate(
     log_file: &Path,
     pid_file: &Path,
     rrsync: &Path,
+    session_user: Option<&str>,
 ) -> Result<()> {
     let original = env::var("SSH_ORIGINAL_COMMAND").context("SSH_ORIGINAL_COMMAND is required")?;
     match classify_gate_command(&original) {
-        GateCommand::Protocol => Gate::new(root, binary, log_file, pid_file)?
-            .handle_protocol(std::io::stdin().lock(), std::io::stdout().lock()),
+        GateCommand::Protocol => {
+            let mut gate = Gate::new(root, binary, log_file, pid_file)?;
+            gate.session_user = session_user.map(str::to_owned);
+            gate.handle_protocol(std::io::stdin().lock(), std::io::stdout().lock())
+        }
         GateCommand::Rsync => run_rrsync(root, rrsync),
         GateCommand::Reject => bail!("SSH command is not permitted"),
     }
@@ -489,6 +574,7 @@ fn run_rrsync(root: &Path, rrsync: &Path) -> Result<()> {
 }
 
 struct Gate {
+    session_user: Option<String>,
     root: PathBuf,
     binary: PathBuf,
     log_file: PathBuf,
@@ -505,6 +591,7 @@ impl Gate {
         let root = fs::canonicalize(root)
             .with_context(|| format!("failed to resolve restricted root {}", root.display()))?;
         Ok(Self {
+            session_user: None,
             binary: fixed_file(&root, binary)?,
             log_file: fixed_file(&root, log_file)?,
             pid_file: fixed_file(&root, pid_file)?,
@@ -526,6 +613,13 @@ impl Gate {
             bail!("restricted SSH request contains unknown fields");
         }
         match request {
+            GateRequest::CheckSession { user } => {
+                if self.session_user.as_deref() != Some(&user) {
+                    bail!("blocked: restricted receiver lacks the requested test-user policy");
+                }
+                serde_json::to_writer(&mut writer, &crate::session::check(&user)?)?;
+                Ok(())
+            }
             GateRequest::Prepare => self.prepare(),
             GateRequest::Launch { args, env } => self.launch(&args, &env),
             GateRequest::Stop => self.stop(),
@@ -557,6 +651,11 @@ impl Gate {
     }
 
     fn launch(&self, args: &[String], env: &[GateEnv]) -> Result<()> {
+        let session = self
+            .session_user
+            .as_deref()
+            .map(crate::session::check)
+            .transpose()?;
         self.prepare()?;
         if !self.binary.is_file() {
             bail!("restricted binary is missing: {}", self.binary.display());
@@ -585,6 +684,9 @@ impl Gate {
             .stderr(Stdio::from(log_err));
         for pair in env {
             command.env(&pair.name, &pair.value);
+        }
+        if let Some(session) = session {
+            session.configure(&mut command);
         }
         let mut child = command
             .spawn()
@@ -833,6 +935,7 @@ mod tests {
             host: "test-host".into(),
             remote_dir: "/remote".into(),
             restricted: false,
+            session_user: None,
             log_file: "game.log".into(),
             pid_file: ".fragpipe.pid".into(),
             binary_name: None,
@@ -848,6 +951,31 @@ mod tests {
         let config = test_config();
         let remote = test_remote();
         deploy(&config, &remote, true).unwrap();
+    }
+
+    #[test]
+    fn unavailable_receiver_session_preserves_logs_and_never_launches() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut gate = Gate::new(
+            dir.path(),
+            Path::new("game"),
+            Path::new("game.log"),
+            Path::new("game.pid"),
+        )
+        .unwrap();
+        gate.session_user = Some("fragpipe-account-that-does-not-exist".into());
+        fs::write(dir.path().join("game.log"), "previous run evidence").unwrap();
+        assert!(
+            gate.launch(&[], &[])
+                .unwrap_err()
+                .to_string()
+                .contains("blocked:")
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("game.log")).unwrap(),
+            "previous run evidence"
+        );
+        assert!(!dir.path().join("game.pid").exists());
     }
 
     #[test]
