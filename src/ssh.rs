@@ -3,6 +3,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::Duration;
 
@@ -47,8 +48,10 @@ pub fn ensure_remote_ready(remote: &RemotePeer, dry_run: bool) -> Result<()> {
             false,
         )?
     } else {
+        let helper = ship_helper(remote)?;
         let command = remote_shell(&format!(
-            "fragpipe session-check --user {}",
+            "{} session-check --user {}",
+            shell_quote(&helper),
             shell_quote(user)
         ));
         let output = Command::new("timeout")
@@ -85,6 +88,36 @@ pub fn ensure_remote_ready(remote: &RemotePeer, dry_run: bool) -> Result<()> {
         remote.name, info.user, info.uid, info.session, info.seat, info.wayland_display
     );
     Ok(())
+}
+
+static HELPER_BINARY: OnceLock<PathBuf> = OnceLock::new();
+
+/// Name the standalone `fragpipe` binary shipped to unrestricted session peers.
+/// Embedding CLIs must call this: their own executable cannot answer
+/// `session-check`/`session-exec`. Standalone fragpipe ships itself.
+pub fn set_helper_binary(path: PathBuf) {
+    let _ = HELPER_BINARY.set(path);
+}
+
+fn remote_helper(remote: &RemotePeer) -> String {
+    format!("{}/fragpipe", remote.remote_dir)
+}
+
+/// Ship this fragpipe build to the peer so its session commands always match
+/// the orchestrator, instead of whatever `fragpipe` the peer has installed.
+/// rsync skips the copy when the binary is unchanged.
+fn ship_helper(remote: &RemotePeer) -> Result<String> {
+    let source = match HELPER_BINARY.get() {
+        Some(path) => path.clone(),
+        None => env::current_exe().context("failed to locate the fragpipe executable")?,
+    };
+    run_ssh_output(
+        &remote.host,
+        &format!("mkdir -p {}", shell_quote(&remote.remote_dir)),
+    )?;
+    let target = remote_helper(remote);
+    run_rsync(&source, remote, &target, Path::new("/"), false)?;
+    Ok(target)
 }
 
 pub fn deploy(config: &Config, remote: &RemotePeer, dry_run: bool) -> Result<()> {
@@ -190,7 +223,8 @@ fn launch_command_with_files(
     let remote_pid = format!("{}/{}", remote.remote_dir, pid_file);
     let executable = match &remote.session_user {
         Some(user) => format!(
-            "fragpipe session-exec --user {} -- {}",
+            "{} session-exec --user {} -- {}",
+            shell_quote(remote_helper(remote)),
             shell_quote(user),
             shell_quote(&remote_binary)
         ),
@@ -1047,6 +1081,15 @@ mod tests {
         assert!(command.contains("cd /remote || exit 1;"));
         assert!(command.contains("FRAGPIPE_REMOTE_EXIT=%s"));
         assert!(!command.contains("&&"));
+    }
+
+    #[test]
+    fn session_launch_uses_the_shipped_helper_not_the_peer_path() {
+        let config = test_config();
+        let mut remote = test_remote();
+        remote.session_user = Some("jarvis".into());
+        let command = launch_command(&config, &remote, &[]).unwrap();
+        assert!(command.contains("/remote/fragpipe session-exec --user jarvis"));
     }
 
     #[test]
