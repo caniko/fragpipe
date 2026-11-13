@@ -423,7 +423,8 @@ pub struct RemotePeer {
     pub remote_dir: String,
     #[serde(default)]
     pub restricted: bool,
-    /// Require this active, unlocked COSMIC account, including for headless runs.
+    /// Run graphical launches inside this active COSMIC account; headless launches
+    /// run as the SSH user and ignore it.
     #[serde(default)]
     pub session_user: Option<String>,
     #[serde(default = "default_remote_log")]
