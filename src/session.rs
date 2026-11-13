@@ -368,9 +368,13 @@ mod tests {
                 let mut request = [0; 12];
                 stream.read_exact(&mut request).unwrap();
                 assert_eq!(u32::from_ne_bytes(request[..4].try_into().unwrap()), 1);
-                for word in [if valid { 2u32 } else { 1u32 }, 12u32 << 16, 0u32] {
-                    stream.write_all(&word.to_ne_bytes()).unwrap();
-                }
+                // One write: the client may reject the header and hang up
+                // before a later write, which would fail with EPIPE.
+                let reply: Vec<u8> = [if valid { 2u32 } else { 1u32 }, 12u32 << 16, 0u32]
+                    .iter()
+                    .flat_map(|word| word.to_ne_bytes())
+                    .collect();
+                stream.write_all(&reply).unwrap();
             });
             assert_eq!(wayland_roundtrip(&socket).is_ok(), valid);
             server.join().unwrap();
