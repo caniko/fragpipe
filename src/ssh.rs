@@ -21,8 +21,15 @@ const GATE_SENTINEL: &str = "FRAGPIPE_SSH_GATE_V1";
 const MAX_REQUEST_BYTES: u64 = 1024 * 1024;
 const MAX_LOG_BYTES: u64 = 1024 * 1024;
 
-/// Check before deployment, cleanup, local spawning, and each repeated run.
-pub fn ensure_remote_ready(remote: &RemotePeer, dry_run: bool) -> Result<()> {
+/// Graphical launches need the test user's unlocked desktop session; headless
+/// ones never touch it, so they run as the SSH user without any session gate.
+fn is_headless(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--headless")
+}
+
+/// Checked right before each graphical launch, so a stale session is caught on
+/// every repeated run.
+fn ensure_remote_ready(remote: &RemotePeer, dry_run: bool) -> Result<()> {
     let Some(user) = &remote.session_user else {
         return Ok(());
     };
@@ -172,7 +179,9 @@ pub fn launch_remote(
     args: &[String],
     dry_run: bool,
 ) -> Result<()> {
-    ensure_remote_ready(remote, dry_run)?;
+    if !is_headless(args) {
+        ensure_remote_ready(remote, dry_run)?;
+    }
     if remote.restricted {
         let request = GateRequest::Launch {
             args: args.to_vec(),
@@ -221,7 +230,7 @@ fn launch_command_with_files(
 
     let remote_binary = format!("{}/{}", remote.remote_dir, binary_name);
     let remote_pid = format!("{}/{}", remote.remote_dir, pid_file);
-    let executable = match &remote.session_user {
+    let executable = match remote.session_user.as_ref().filter(|_| !is_headless(args)) {
         Some(user) => format!(
             "{} session-exec --user {} -- {}",
             shell_quote(remote_helper(remote)),
@@ -317,7 +326,9 @@ pub fn launch_remote_instance(
     args: &[String],
     dry_run: bool,
 ) -> Result<()> {
-    ensure_remote_ready(remote, dry_run)?;
+    if !is_headless(args) {
+        ensure_remote_ready(remote, dry_run)?;
+    }
     if remote.restricted {
         bail!("multiple remote processes are not supported by restricted SSH peers");
     }
@@ -688,6 +699,7 @@ impl Gate {
         let session = self
             .session_user
             .as_deref()
+            .filter(|_| !is_headless(args))
             .map(crate::session::check)
             .transpose()?;
         self.prepare()?;
@@ -1090,6 +1102,16 @@ mod tests {
         remote.session_user = Some("jarvis".into());
         let command = launch_command(&config, &remote, &[]).unwrap();
         assert!(command.contains("/remote/fragpipe session-exec --user jarvis"));
+    }
+
+    #[test]
+    fn headless_launch_skips_the_session_gate() {
+        let config = test_config();
+        let mut remote = test_remote();
+        remote.session_user = Some("jarvis".into());
+        let command = launch_command(&config, &remote, &["--headless".into()]).unwrap();
+        assert!(!command.contains("session-exec"));
+        assert!(command.contains("/remote/game --headless"));
     }
 
     #[test]

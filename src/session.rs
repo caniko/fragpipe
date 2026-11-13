@@ -198,16 +198,13 @@ fn probe(user: &str) -> Result<SessionInfo> {
         )
     };
     let seat = validate_session(&observe()?, user, uid)?;
-    // ponytail: COSMIC only. Its greeter executable acts as the locker when
-    // run by a desktop user (cosmic-greeter/src/main.rs). Add a lock-state
-    // provider before supporting another DE; logind's hint alone is unreliable.
+    // ponytail: no reliable COSMIC lock signal. cosmic-greeter 1.11 keeps its
+    // locker resident for the whole login and never sets logind's LockedHint,
+    // so a locked screen is not detected: a graphical run renders behind the
+    // lock. Add a lock check once COSMIC exposes lock state.
     ensure!(
         process_present("cosmic-session", uid)? && process_present("cosmic-comp", uid)?,
         "blocked: test user's COSMIC session/compositor is unavailable"
-    );
-    ensure!(
-        !process_present("cosmic-greeter", uid)?,
-        "blocked: test user's COSMIC lock screen is running"
     );
     let runtime = format!("/run/user/{uid}");
     let metadata = std::fs::metadata(&runtime)?;
@@ -240,10 +237,6 @@ fn probe(user: &str) -> Result<SessionInfo> {
     wayland_roundtrip(&socket)?;
     // Recheck after I/O: user switching/locking during observation is not ready.
     validate_session(&observe()?, user, uid)?;
-    ensure!(
-        !process_present("cosmic-greeter", uid)?,
-        "blocked: test session locked during readiness check"
-    );
     Ok(SessionInfo {
         user: user.into(),
         uid,
