@@ -441,6 +441,12 @@ pub struct RemotePeer {
     pub env: Vec<EnvPair>,
     #[serde(default)]
     pub join_args: Vec<String>,
+    /// Copy every directory on fragpipe's own `LD_LIBRARY_PATH` to the peer and
+    /// point launches at the copies, so the peer loads the same runtime libraries
+    /// (Wayland, Vulkan loader, ...) as local peers without installing them.
+    /// Unrestricted peers only.
+    #[serde(default)]
+    pub ship_local_libraries: bool,
 }
 
 #[derive(Debug, Deserialize)]
