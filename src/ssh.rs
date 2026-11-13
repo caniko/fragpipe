@@ -127,6 +127,57 @@ fn ship_helper(remote: &RemotePeer) -> Result<String> {
     Ok(target)
 }
 
+/// Existing directories on fragpipe's own `LD_LIBRARY_PATH`, in search order:
+/// the libraries local peers load.
+fn local_library_dirs() -> Vec<PathBuf> {
+    env::var_os("LD_LIBRARY_PATH")
+        .map(|value| {
+            env::split_paths(&value)
+                .filter(|dir| dir.is_dir())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Peer-side `LD_LIBRARY_PATH` for `count` shipped directories, same order.
+fn remote_library_path(remote: &RemotePeer, count: usize) -> String {
+    (0..count)
+        .map(|index| format!("{}/lib/{index}", remote.remote_dir))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+/// Copy each local library directory to `<remote_dir>/lib/<index>`, following
+/// symlinks: Nix store links would dangle on a peer without those paths.
+fn ship_local_libraries(remote: &RemotePeer, dry_run: bool) -> Result<()> {
+    if remote.restricted {
+        bail!("ship_local_libraries requires an unrestricted SSH peer");
+    }
+    let lib_root = format!("{}/lib", remote.remote_dir);
+    run_ssh(
+        &remote.host,
+        &format!("mkdir -p {}", shell_quote(&lib_root)),
+        dry_run,
+    )?;
+    for (index, dir) in local_library_dirs().iter().enumerate() {
+        let target = format!("{}:{lib_root}/{index}/", remote.host);
+        let source = rsync_source(dir);
+        println!("rsync -aL --delete {source} {target}");
+        if dry_run {
+            continue;
+        }
+        let status = Command::new("rsync")
+            .arg("-aL")
+            .arg("--delete")
+            .arg(&source)
+            .arg(&target)
+            .status()
+            .context("failed to run rsync")?;
+        ensure_success(status, "rsync")?;
+    }
+    Ok(())
+}
+
 pub fn deploy(config: &Config, remote: &RemotePeer, dry_run: bool) -> Result<()> {
     let project_root = project_root(config);
     if remote.restricted {
@@ -160,6 +211,10 @@ pub fn deploy(config: &Config, remote: &RemotePeer, dry_run: bool) -> Result<()>
 
     for item in &remote.deploy {
         run_rsync(&item.source, remote, &item.target, project_root, dry_run)?;
+    }
+
+    if remote.ship_local_libraries {
+        ship_local_libraries(remote, dry_run)?;
     }
 
     if remote.restricted {
@@ -226,6 +281,11 @@ fn launch_command_with_files(
     }
     for pair in &remote.env {
         env.push_str(&format!("{}={} ", pair.name, shell_quote(&pair.value)));
+    }
+    if remote.ship_local_libraries {
+        // Last assignment wins over any LD_LIBRARY_PATH in `remote.env`.
+        let path = remote_library_path(remote, local_library_dirs().len());
+        env.push_str(&format!("LD_LIBRARY_PATH={} ", shell_quote(path)));
     }
 
     let remote_binary = format!("{}/{}", remote.remote_dir, binary_name);
@@ -444,6 +504,16 @@ fn remote_shell(command: &str) -> String {
     format!("sh -lc {}", shell_quote(command))
 }
 
+/// A directory source copies its contents (`dir/`), so the target path names
+/// the copy itself instead of receiving a nested `target/dir`.
+fn rsync_source(path: &Path) -> String {
+    if path.is_dir() {
+        format!("{}/", path.display())
+    } else {
+        path.display().to_string()
+    }
+}
+
 fn run_rsync(
     source: &Path,
     remote: &RemotePeer,
@@ -457,13 +527,14 @@ fn run_rsync(
     } else {
         target.to_owned()
     };
-    println!("rsync -az {} {}:{target}", resolved.display(), remote.host);
+    let source = rsync_source(&resolved);
+    println!("rsync -az {source} {}:{target}", remote.host);
     if dry_run {
         return Ok(());
     }
     let status = Command::new("rsync")
         .arg("-az")
-        .arg(&resolved)
+        .arg(&source)
         .arg(format!("{}:{target}", remote.host))
         .status()
         .context("failed to run rsync")?;
@@ -989,6 +1060,7 @@ mod tests {
             deploy: vec![],
             env: vec![],
             join_args: vec![],
+            ship_local_libraries: false,
         }
     }
 
@@ -1102,6 +1174,25 @@ mod tests {
         remote.session_user = Some("jarvis".into());
         let command = launch_command(&config, &remote, &[]).unwrap();
         assert!(command.contains("/remote/fragpipe session-exec --user jarvis"));
+    }
+
+    #[test]
+    fn directory_sources_copy_their_contents() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        assert!(rsync_source(&dir).ends_with("/src/"));
+        assert!(rsync_source(&dir.join("ssh.rs")).ends_with("/src/ssh.rs"));
+    }
+
+    #[test]
+    fn shipped_libraries_keep_search_order_on_the_peer() {
+        let mut remote = test_remote();
+        assert_eq!(
+            remote_library_path(&remote, 2),
+            "/remote/lib/0:/remote/lib/1"
+        );
+        remote.ship_local_libraries = true;
+        let command = launch_command(&test_config(), &remote, &[]).unwrap();
+        assert!(command.contains("LD_LIBRARY_PATH="));
     }
 
     #[test]
