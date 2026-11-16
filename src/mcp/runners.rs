@@ -89,11 +89,15 @@ fn extra(args: &mut Vec<String>, name: &str, values: Option<Vec<String>>) -> Res
     Ok(())
 }
 impl FragpipeRunner {
-    fn cleanup(&self, common: &Common, remote: &str, tournament: bool) -> Vec<String> {
+    /// `direct-stop` for the remote on cancel; none for a dry run, which started nothing.
+    fn cleanup(&self, common: &Common, remote: &str, tournament: bool) -> Option<Vec<String>> {
+        if common.dry_run == Some(true) {
+            return None;
+        }
         let mut cleanup = self.ctx.fragpipe_argv.clone();
         cleanup.extend(["direct-stop".into(), format!("--config={}", common.config.as_deref().unwrap_or("fragpipe.toml")), format!("--remote={remote}")]);
         if tournament { cleanup.push("--tournament".into()); }
-        cleanup
+        Some(cleanup)
     }
     fn windowed(&self, common: &Common, remote: &str) -> Result<()> {
         let cfg = self.config(common)?;
@@ -119,7 +123,7 @@ impl FragpipeRunner {
             _ => anyhow::bail!("tournament port missing"),
         };
         spec.locks.push(format!("lan-udp-{port}"));
-        spec.cleanup = Some(self.cleanup(common, remote, tournament));
+        spec.cleanup = self.cleanup(common, remote, tournament);
         if let Some(markers) = cfg.get("process").and_then(|v| v.get("fatal_markers")).and_then(toml::Value::as_array) {
             spec.fail_markers = markers.iter().filter_map(toml::Value::as_str).map(regex::escape).collect();
         }
@@ -176,7 +180,7 @@ impl Runner for FragpipeRunner {
             }
             "webrtc-1v1" => {
                 let p: Webrtc = params.clone().try_into()?;
-                if let Some(remote) = &p.remote { spec.cleanup = Some(self.cleanup(&p.common, remote, false)); }
+                if let Some(remote) = &p.remote { spec.cleanup = self.cleanup(&p.common, remote, false); }
                 common(&mut spec, &p.common, 300, false, false);
                 option(&mut spec.argv, "remote", p.remote); option(&mut spec.argv, "local-ip", p.local_ip);
                 option(&mut spec.argv, "webrtc-port", p.webrtc_port); flag(&mut spec.argv, "no-deploy", p.no_deploy);
@@ -226,7 +230,7 @@ impl Runner for FragpipeRunner {
                 // Only a restarting ship launches a remote game this job owns; a plain
                 // deploy must not stop a game that was already running there.
                 if p.restart == Some(true) {
-                    spec.cleanup = Some(self.cleanup(&p.common, &p.remote, false));
+                    spec.cleanup = self.cleanup(&p.common, &p.remote, false);
                 }
                 common(&mut spec, &p.common, 600, false, true);
                 option(&mut spec.argv, "remote", Some(p.remote)); flag(&mut spec.argv, "no-deploy", p.no_deploy);
@@ -310,6 +314,22 @@ adb_serial = "SERIAL1"
             .build(&toml1::from_str("remote = 'nomad'\nrestart = true").unwrap())
             .unwrap();
         assert_eq!(restart.cleanup.unwrap()[1], "direct-stop");
+        // A dry run started nothing remote, so cancelling it must not stop anything.
+        let dry = runner
+            .build(&toml1::from_str("remote = 'nomad'\nrestart = true\ndry_run = true").unwrap())
+            .unwrap();
+        assert!(dry.cleanup.is_none());
+        let webrtc = FragpipeRunner {
+            name: "webrtc-1v1",
+            ctx: FragpipeCtx {
+                project_root: dir.path().into(),
+                fragpipe_argv: vec!["fragpipe".into()],
+            },
+        };
+        let dry = webrtc
+            .build(&toml1::from_str("remote = 'nomad'\ndry_run = true").unwrap())
+            .unwrap();
+        assert!(dry.cleanup.is_none());
     }
 
     #[test]
