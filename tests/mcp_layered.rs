@@ -24,7 +24,7 @@ async fn inventory_and_history_use_project_root() {
     };
     let fragpipe = FragpipeCtx {
         project_root: dir.path().to_owned(),
-        fragpipe_bin: "fragpipe".into(),
+        fragpipe_argv: vec!["fragpipe".into()],
     };
     let steampipe = steampipe::mcp::SteampipeCtx {
         project_root: dir.path().to_owned(),
@@ -94,12 +94,12 @@ async fn tournament_jobs_and_profiles() {
     }
     let display = std::env::var("FRAGPIPE_MCP_TEST_CHILD").unwrap() == "display";
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("fragpipe.toml"), "[tournament]\nport=27100\n[job_profiles.lan-test]\nrunner='direct-tournament'\n[job_profiles.lan-test.params]\nremote='nomad'\n").unwrap();
+    std::fs::write(dir.path().join("fragpipe.toml"), "[tournament]\nport=27100\n[[remote]]\nname='nomad'\nsession_user='tester'\n[job_profiles.lan-test]\nrunner='direct-tournament'\n[job_profiles.lan-test.params]\nremote='nomad'\n").unwrap();
     let script = dir.path().join("fake-cli");
     std::fs::write(&script, "#!/bin/sh\nprintf '%s\n' \"$@\"\ncase \"$*\" in *sleepy*) sleep 3;; esac\n").unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     let jobs = JobTools { jobs: Jobs::new(dir.path().join("jobs"), env!("CARGO_BIN_EXE_fragpipe-mcp")), registry: Default::default(), profile_paths: vec![] };
-    let f = FragpipeCtx { project_root: dir.path().into(), fragpipe_bin: script.to_string_lossy().into() };
+    let f = FragpipeCtx { project_root: dir.path().into(), fragpipe_argv: vec![script.to_string_lossy().into()] };
     let s = steampipe::mcp::SteampipeCtx { project_root: dir.path().into(), cluster_ctl: "cluster-ctl".into() };
     let (server_io, client_io) = tokio::io::duplex(8192);
     let server = tokio::spawn(async move { layered(f, s, jobs).serve(server_io).await.unwrap().waiting().await.unwrap() });
@@ -145,7 +145,7 @@ async fn android_doctor_is_killed_at_its_timeout() {
     };
     let fragpipe = FragpipeCtx {
         project_root: dir.path().to_owned(),
-        fragpipe_bin: script.to_string_lossy().into(),
+        fragpipe_argv: vec![script.to_string_lossy().into()],
     };
     let steampipe = steampipe::mcp::SteampipeCtx {
         project_root: dir.path().to_owned(),

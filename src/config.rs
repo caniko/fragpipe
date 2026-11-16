@@ -623,11 +623,11 @@ fn default_direct_ready_marker() -> String {
     "LAN host started on port".into()
 }
 
-fn default_direct_artifact_dir() -> PathBuf {
+pub(crate) fn default_direct_artifact_dir() -> PathBuf {
     PathBuf::from("logs/fragpipe/direct-1v1")
 }
 
-fn default_tournament_artifact_dir() -> PathBuf {
+pub(crate) fn default_tournament_artifact_dir() -> PathBuf {
     PathBuf::from("logs/fragpipe/direct-tournament")
 }
 

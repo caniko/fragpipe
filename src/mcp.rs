@@ -11,7 +11,7 @@ pub mod runners;
 #[derive(Clone, Debug)]
 pub struct FragpipeCtx {
     pub project_root: PathBuf,
-    pub fragpipe_bin: String,
+    pub fragpipe_argv: Vec<String>,
 }
 
 pub struct FragpipeTools { ctx: FragpipeCtx }
@@ -39,7 +39,9 @@ struct AndroidDoctorInput {
 impl FragpipeTools {
     #[tool(description = "Run fragpipe android-doctor against an Android config.")]
     fn android_doctor(&self, Parameters(input): Parameters<AndroidDoctorInput>) -> Result<CallToolResult, ErrorData> {
-        let mut cmd = Command::new(&self.ctx.fragpipe_bin);
+        let (program, prefix) = self.ctx.fragpipe_argv.split_first().ok_or_else(|| ErrorData::internal_error("empty fragpipe argv", None))?;
+        let mut cmd = Command::new(program);
+        cmd.args(prefix);
         cmd.current_dir(&self.ctx.project_root).arg("android-doctor");
         for (name, value) in [("config", input.config), ("adb-serial", input.adb_serial),
             ("slot", input.slot), ("workers-config", input.workers_config)] {

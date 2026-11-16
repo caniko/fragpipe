@@ -25,7 +25,7 @@ struct Common {
 struct Direct {
     #[serde(flatten)] common: Common,
     remote: String, transport: Option<String>, port: Option<u16>, local_ip: Option<String>,
-    no_deploy: Option<bool>, headless: Option<bool>,
+    no_deploy: Option<bool>, headless: Option<bool>, windowed: Option<bool>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -89,6 +89,19 @@ fn extra(args: &mut Vec<String>, name: &str, values: Option<Vec<String>>) -> Res
     Ok(())
 }
 impl FragpipeRunner {
+    fn cleanup(&self, common: &Common, remote: &str, tournament: bool) -> Vec<String> {
+        let mut cleanup = self.ctx.fragpipe_argv.clone();
+        cleanup.extend(["direct-stop".into(), format!("--config={}", common.config.as_deref().unwrap_or("fragpipe.toml")), format!("--remote={remote}")]);
+        if tournament { cleanup.push("--tournament".into()); }
+        cleanup
+    }
+    fn windowed(&self, common: &Common, remote: &str) -> Result<()> {
+        let cfg = self.config(common)?;
+        let peer = cfg.get("remote").and_then(toml::Value::as_array).and_then(|peers| peers.iter().find(|p| p.get("name").and_then(toml::Value::as_str) == Some(remote)));
+        ensure!(peer.and_then(|p| p.get("session_user")).and_then(toml::Value::as_str).is_some_and(|s| !s.trim().is_empty()), "windowed remote '{remote}' requires session_user");
+        ensure!(["DISPLAY", "WAYLAND_DISPLAY"].iter().any(|key| std::env::var_os(key).is_some_and(|v| !v.is_empty())), "windowed run requires a local display");
+        Ok(())
+    }
     fn config(&self, common: &Common) -> Result<Table> {
         let path = self.ctx.project_root.join(common.config.as_deref().unwrap_or("fragpipe.toml"));
         let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
@@ -106,13 +119,12 @@ impl FragpipeRunner {
             _ => anyhow::bail!("tournament port missing"),
         };
         spec.locks.push(format!("lan-udp-{port}"));
-        let mut cleanup = vec![self.ctx.fragpipe_bin.clone(), "direct-stop".into(), format!("--config={}", common.config.as_deref().unwrap_or("fragpipe.toml")), format!("--remote={remote}")];
-        if tournament { cleanup.push("--tournament".into()); }
-        spec.cleanup = Some(cleanup);
+        spec.cleanup = Some(self.cleanup(common, remote, tournament));
         if let Some(markers) = cfg.get("process").and_then(|v| v.get("fatal_markers")).and_then(toml::Value::as_array) {
             spec.fail_markers = markers.iter().filter_map(toml::Value::as_str).map(regex::escape).collect();
         }
-        if let Some(dir) = table.and_then(|t| t.get("artifact_dir")).and_then(toml::Value::as_str) {
+        {
+            let dir = table.and_then(|t| t.get("artifact_dir")).and_then(toml::Value::as_str).map(std::path::PathBuf::from).unwrap_or_else(|| if tournament { crate::config::default_tournament_artifact_dir() } else { crate::config::default_direct_artifact_dir() });
             let root = cfg.get("game").and_then(|g| g.get("project_root"))
                 .and_then(toml::Value::as_str).unwrap_or(".");
             let dir = std::path::Path::new(root).join(dir);
@@ -134,10 +146,13 @@ impl FragpipeRunner {
 impl Runner for FragpipeRunner {
     fn name(&self) -> &str { self.name }
     fn build(&self, params: &toml1::Table) -> Result<JobSpec> {
-        let mut spec = JobSpec { runner: self.name.into(), cwd: self.ctx.project_root.clone(), argv: vec![self.ctx.fragpipe_bin.clone(), self.name.into()], ..Default::default() };
+        ensure!(!self.ctx.fragpipe_argv.is_empty(), "empty fragpipe argv");
+        let mut spec = JobSpec { runner: self.name.into(), cwd: self.ctx.project_root.clone(), argv: self.ctx.fragpipe_argv.clone(), ..Default::default() };
+        spec.argv.push(self.name.into());
         match self.name {
             "direct-1v1" => {
                 let p: Direct = params.clone().try_into()?;
+                if p.windowed == Some(true) { ensure!(p.headless != Some(true), "windowed and headless conflict"); self.windowed(&p.common, &p.remote)?; }
                 common(&mut spec, &p.common, 300, false, false);
                 option(&mut spec.argv, "remote", Some(&p.remote)); option(&mut spec.argv, "transport", p.transport);
                 option(&mut spec.argv, "port", p.port); option(&mut spec.argv, "local-ip", p.local_ip);
@@ -147,7 +162,7 @@ impl Runner for FragpipeRunner {
             "direct-tournament" => {
                 let p: Tournament = params.clone().try_into()?;
                 if p.windowed == Some(true) {
-                    ensure!(["DISPLAY", "WAYLAND_DISPLAY"].iter().any(|key| std::env::var_os(key).is_some_and(|v| !v.is_empty())), "windowed tournament requires a local display");
+                    self.windowed(&p.common, &p.remote)?;
                 }
                 common(&mut spec, &p.common, 600, false, false);
                 option(&mut spec.argv, "remote", Some(&p.remote)); option(&mut spec.argv, "local-ip", p.local_ip);
@@ -161,6 +176,7 @@ impl Runner for FragpipeRunner {
             }
             "webrtc-1v1" => {
                 let p: Webrtc = params.clone().try_into()?;
+                if let Some(remote) = &p.remote { spec.cleanup = Some(self.cleanup(&p.common, remote, false)); }
                 common(&mut spec, &p.common, 300, false, false);
                 option(&mut spec.argv, "remote", p.remote); option(&mut spec.argv, "local-ip", p.local_ip);
                 option(&mut spec.argv, "webrtc-port", p.webrtc_port); flag(&mut spec.argv, "no-deploy", p.no_deploy);
@@ -174,13 +190,13 @@ impl Runner for FragpipeRunner {
             }
             "android-1v1" | "android-ui" => {
                 let p: Android = params.clone().try_into()?;
+                ensure!(self.name == "android-ui" || p.launch_config.is_none(), "launch_config is only supported by android-ui");
                 common(&mut spec, &p.common, if self.name == "android-ui" { 120 } else { 300 }, false, false);
                 let cfg = self.config(&p.common)?;
                 // Lock on the device serial: a slot name resolves to its serial through
                 // the workers config, so a slot and its serial exclude each other.
-                let serial = match (&p.adb_serial, &p.slot) {
-                    (Some(serial), _) => serial.clone(),
-                    (None, Some(slot)) => {
+                let serial = match (&p.slot, &p.adb_serial) {
+                    (Some(slot), _) => {
                         let path = p.workers_config.as_ref().map(|path| {
                             self.ctx.project_root.join(path)
                         });
@@ -191,6 +207,7 @@ impl Runner for FragpipeRunner {
                         )?;
                         slots[0].adb_serial.clone()
                     }
+                    (None, Some(serial)) => serial.clone(),
                     (None, None) => cfg
                         .get("android")
                         .and_then(|android| android.get("adb_serial"))
@@ -206,6 +223,11 @@ impl Runner for FragpipeRunner {
             }
             "ship" => {
                 let p: Ship = params.clone().try_into()?;
+                // Only a restarting ship launches a remote game this job owns; a plain
+                // deploy must not stop a game that was already running there.
+                if p.restart == Some(true) {
+                    spec.cleanup = Some(self.cleanup(&p.common, &p.remote, false));
+                }
                 common(&mut spec, &p.common, 600, false, true);
                 option(&mut spec.argv, "remote", Some(p.remote)); flag(&mut spec.argv, "no-deploy", p.no_deploy);
                 flag(&mut spec.argv, "require-green", p.require_green); flag(&mut spec.argv, "restart", p.restart);
@@ -242,16 +264,99 @@ adb_serial = "SERIAL1"
         .unwrap();
         let ctx = FragpipeCtx {
             project_root: dir.path().into(),
-            fragpipe_bin: "fragpipe".into(),
+            fragpipe_argv: vec!["fragpipe".into()],
         };
         let runner = FragpipeRunner { name: "android-1v1", ctx };
         let locks = |params: &str| runner.build(&toml1::from_str(params).unwrap()).unwrap().locks;
         let by_slot = locks("slot = \"pixel\"\nworkers_config = \"workers.toml\"");
         let by_serial = locks("adb_serial = \"SERIAL1\"");
+        for params in ["slot = \"pixel\"\nadb_serial = \"OTHER\"\nworkers_config = \"workers.toml\"", "adb_serial = \"OTHER\"\nslot = \"pixel\"\nworkers_config = \"workers.toml\""] {
+            assert_eq!(locks(params), by_slot);
+        }
         assert_eq!(by_slot, by_serial);
         assert!(by_slot.contains(&"android-SERIAL1".to_string()), "{by_slot:?}");
         assert!(runner
             .build(&toml1::from_str("slot = \"missing\"\nworkers_config = \"workers.toml\"").unwrap())
             .is_err());
+    }
+
+    #[test]
+    fn android_1v1_rejects_launch_config() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("fragpipe.toml"), "").unwrap();
+        let runner = FragpipeRunner { name: "android-1v1", ctx: FragpipeCtx { project_root: dir.path().into(), fragpipe_argv: vec!["fragpipe".into()] } };
+        assert!(runner.build(&toml1::from_str("launch_config = '{}' ").unwrap()).is_err());
+    }
+
+    #[test]
+    fn remote_webrtc_has_cleanup() {
+        let dir = tempfile::tempdir().unwrap();
+        let runner = FragpipeRunner { name: "webrtc-1v1", ctx: FragpipeCtx { project_root: dir.path().into(), fragpipe_argv: vec!["fragpipe".into()] } };
+        let spec = runner.build(&toml1::from_str("remote = 'nomad'").unwrap()).unwrap();
+        assert_eq!(spec.cleanup.unwrap(), ["fragpipe", "direct-stop", "--config=fragpipe.toml", "--remote=nomad"]);
+    }
+
+    #[test]
+    fn only_a_restarting_ship_stops_the_remote_on_cancel() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = FragpipeCtx {
+            project_root: dir.path().into(),
+            fragpipe_argv: vec!["fragpipe".into()],
+        };
+        let runner = FragpipeRunner { name: "ship", ctx };
+        let deploy = runner.build(&toml1::from_str("remote = 'nomad'").unwrap()).unwrap();
+        assert!(deploy.cleanup.is_none());
+        let restart = runner
+            .build(&toml1::from_str("remote = 'nomad'\nrestart = true").unwrap())
+            .unwrap();
+        assert_eq!(restart.cleanup.unwrap()[1], "direct-stop");
+    }
+
+    #[test]
+    fn default_artifacts_are_declared() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("fragpipe.toml"), "[tournament]\nport=27100\nlocal_players=1\nremote_players=1\n").unwrap();
+        for name in ["direct-1v1", "direct-tournament"] {
+            let runner = FragpipeRunner { name, ctx: FragpipeCtx { project_root: dir.path().into(), fragpipe_argv: vec!["fragpipe".into()] } };
+            let spec = runner.build(&toml1::from_str("remote = 'nomad'").unwrap()).unwrap();
+            assert!(spec.artifacts.iter().any(|p| p.ends_with(&format!("{name}/run-01/report.json"))), "{name}: {:?}", spec.artifacts);
+        }
+    }
+
+    #[test]
+    fn windowed_requires_selected_remote_session_user() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("fragpipe.toml"), "[tournament]\nport=27100\n[[remote]]\nname='nomad'\n[[remote]]\nname='other'\nsession_user='tester'\n").unwrap();
+        for name in ["direct-1v1", "direct-tournament"] {
+            let runner = FragpipeRunner { name, ctx: FragpipeCtx { project_root: dir.path().into(), fragpipe_argv: vec!["fragpipe".into()] } };
+            let err = runner.build(&toml1::from_str("remote='nomad'\nwindowed=true").unwrap()).unwrap_err();
+            assert!(err.to_string().contains("session_user"), "{err}");
+        }
+    }
+
+    #[test]
+    fn every_runner_builds_parseable_cli_with_argv_prefix() {
+        use clap::Parser;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("fragpipe.toml"), "[tournament]\nport=27100\n").unwrap();
+        std::fs::write(dir.path().join("workers.toml"), "[[android_worker]]\nname='worker'\nhost='host'\nlocal_port=15037\n[[android_worker.slots]]\nname='pixel'\nkind='device'\nadb_serial='SERIAL1'\n").unwrap();
+        let cases = [
+            ("direct-1v1", "remote='nomad'\ntransport='lan'\nport=27100\nlocal_ip='127.0.0.1'\nno_deploy=true\nheadless=true"),
+            ("direct-tournament", "remote='nomad'\nlocal_ip='127.0.0.1'\nno_deploy=true\nwindowed=false\nhost_extra_args=['--host']\njoiner_extra_args=['--join']\ndrop_args=['--headless']"),
+            ("webrtc-1v1", "remote='nomad'\nlocal_ip='127.0.0.1'\nwebrtc_port=27200\nno_deploy=true"),
+            ("internet-1v1", "smoke_workdir='.'\ngame_bin='game'\nrdv_bin='rdv'\nasset_root='assets'\nlog_dir='logs'\npass_marker='PASS'"),
+            ("android-1v1", "no_install=true\ndevice=true\nadb_serial='OTHER'\nslot='pixel'\nworkers_config='workers.toml'"),
+            ("android-ui", "no_install=true\ndevice=true\nadb_serial='OTHER'\nslot='pixel'\nworkers_config='workers.toml'\nlaunch_config='{}'"),
+            ("ship", "remote='nomad'\nno_deploy=true\nrequire_green=true\nrestart=true\nlaunch_args=['--headless']"),
+        ];
+        for (name, params) in cases {
+            let runner = FragpipeRunner { name, ctx: FragpipeCtx { project_root: dir.path().into(), fragpipe_argv: vec!["cb".into(), "gameplay".into()] } };
+            let common = if name == "internet-1v1" { "config='fragpipe.toml'\nmax_runs=2\ntimeout=30\nstop_on_failure=false\ndry_run=true\n" } else { "config='fragpipe.toml'\nmax_runs=2\ntimeout=30\nstop_on_failure=false\nno_build=true\ndry_run=true\n" };
+            let spec = runner.build(&toml1::from_str(&format!("{common}{params}")).unwrap()).unwrap();
+            assert_eq!(&spec.argv[..3], ["cb", "gameplay", name]);
+            let argv = std::iter::once("fragpipe").chain(spec.argv[2..].iter().map(String::as_str));
+            crate::Cli::try_parse_from(argv).unwrap_or_else(|e| panic!("{name}: {e}"));
+            if let Some(cleanup) = spec.cleanup { assert_eq!(&cleanup[..2], ["cb", "gameplay"]); }
+        }
     }
 }
