@@ -26,7 +26,11 @@ async fn main() -> anyhow::Result<()> {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         if arg == "--fragpipe-argv" {
-            prefix.push(iter.next().ok_or_else(|| anyhow::anyhow!("--fragpipe-argv requires a value"))?.clone());
+            prefix.push(
+                iter.next()
+                    .ok_or_else(|| anyhow::anyhow!("--fragpipe-argv requires a value"))?
+                    .clone(),
+            );
         } else if let Some(value) = arg.strip_prefix("--fragpipe-argv=") {
             prefix.push(value.to_owned());
         } else {
@@ -34,13 +38,22 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     if prefix.is_empty() {
-        if let Ok(value) = std::env::var("FRAGPIPE_ARGV") { prefix.extend(value.split_whitespace().map(str::to_owned)); }
+        if let Ok(value) = std::env::var("FRAGPIPE_ARGV") {
+            prefix.extend(value.split_whitespace().map(str::to_owned));
+        }
         if prefix.is_empty() {
             let sibling = exe.with_file_name("fragpipe");
-            prefix.push(if sibling.is_file() { sibling.to_string_lossy().into_owned() } else { "fragpipe".into() });
+            prefix.push(if sibling.is_file() {
+                sibling.to_string_lossy().into_owned()
+            } else {
+                "fragpipe".into()
+            });
         }
     }
-    anyhow::ensure!(!prefix[0].is_empty(), "fragpipe executable must not be empty");
+    anyhow::ensure!(
+        !prefix[0].is_empty(),
+        "fragpipe executable must not be empty"
+    );
     let fragpipe = FragpipeCtx {
         project_root: project_root.clone(),
         fragpipe_argv: prefix,

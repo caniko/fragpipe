@@ -14,14 +14,24 @@ pub struct FragpipeCtx {
     pub fragpipe_argv: Vec<String>,
 }
 
-pub struct FragpipeTools { ctx: FragpipeCtx }
-
-pub fn tool_set(ctx: FragpipeCtx) -> impl ToolSet {
-    Routed { state: FragpipeTools { ctx }, router: FragpipeTools::tool_router() }
+pub struct FragpipeTools {
+    ctx: FragpipeCtx,
 }
 
-pub fn layered(fragpipe: FragpipeCtx, steampipe: cluster::SteampipeCtx, mut jobs: JobTools) -> Layered {
-    jobs.profile_paths.insert(0, fragpipe.project_root.join("fragpipe.toml"));
+pub fn tool_set(ctx: FragpipeCtx) -> impl ToolSet {
+    Routed {
+        state: FragpipeTools { ctx },
+        router: FragpipeTools::tool_router(),
+    }
+}
+
+pub fn layered(
+    fragpipe: FragpipeCtx,
+    steampipe: cluster::SteampipeCtx,
+    mut jobs: JobTools,
+) -> Layered {
+    jobs.profile_paths
+        .insert(0, fragpipe.project_root.join("fragpipe.toml"));
     runners::register(std::sync::Arc::make_mut(&mut jobs.registry), &fragpipe)
         .expect("duplicate fragpipe runner");
     cluster::layered(steampipe, jobs).with(tool_set(fragpipe))
@@ -29,8 +39,11 @@ pub fn layered(fragpipe: FragpipeCtx, steampipe: cluster::SteampipeCtx, mut jobs
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct AndroidDoctorInput {
-    config: Option<String>, device: Option<bool>, adb_serial: Option<String>,
-    slot: Option<String>, workers_config: Option<String>,
+    config: Option<String>,
+    device: Option<bool>,
+    adb_serial: Option<String>,
+    slot: Option<String>,
+    workers_config: Option<String>,
     /// Seconds before the doctor is killed (default 120, at most 600).
     timeout: Option<u64>,
 }
@@ -38,16 +51,32 @@ struct AndroidDoctorInput {
 #[tool_router]
 impl FragpipeTools {
     #[tool(description = "Run fragpipe android-doctor against an Android config.")]
-    fn android_doctor(&self, Parameters(input): Parameters<AndroidDoctorInput>) -> Result<CallToolResult, ErrorData> {
-        let (program, prefix) = self.ctx.fragpipe_argv.split_first().ok_or_else(|| ErrorData::internal_error("empty fragpipe argv", None))?;
+    fn android_doctor(
+        &self,
+        Parameters(input): Parameters<AndroidDoctorInput>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (program, prefix) = self
+            .ctx
+            .fragpipe_argv
+            .split_first()
+            .ok_or_else(|| ErrorData::internal_error("empty fragpipe argv", None))?;
         let mut cmd = Command::new(program);
         cmd.args(prefix);
-        cmd.current_dir(&self.ctx.project_root).arg("android-doctor");
-        for (name, value) in [("config", input.config), ("adb-serial", input.adb_serial),
-            ("slot", input.slot), ("workers-config", input.workers_config)] {
-            if let Some(value) = value { cmd.arg(format!("--{name}={value}")); }
+        cmd.current_dir(&self.ctx.project_root)
+            .arg("android-doctor");
+        for (name, value) in [
+            ("config", input.config),
+            ("adb-serial", input.adb_serial),
+            ("slot", input.slot),
+            ("workers-config", input.workers_config),
+        ] {
+            if let Some(value) = value {
+                cmd.arg(format!("--{name}={value}"));
+            }
         }
-        if input.device == Some(true) { cmd.arg("--device"); }
+        if input.device == Some(true) {
+            cmd.arg("--device");
+        }
         let internal = |e: std::io::Error| ErrorData::internal_error(e.to_string(), None);
         let limit = std::time::Duration::from_secs(input.timeout.unwrap_or(120).min(600));
         let mut child = {
