@@ -7,6 +7,9 @@ description = "Bare-metal multiplayer test orchestration for games"
 
 [workspace]
 
+[features]
+mcp = ["dep:rmcp", "dep:schemars", "dep:tokio", "dep:tracing-subscriber", "dep:mcp-layer", "dep:steampipe", "dep:toml1"]
+
 [lib]
 path = "src/lib.rs"
 
@@ -14,18 +17,26 @@ path = "src/lib.rs"
 name = "fragpipe"
 path = "src/main.rs"
 
+[[bin]]
+name = "fragpipe-mcp"
+path = "src/bin/fragpipe-mcp.rs"
+required-features = ["mcp"]
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 regex = "1"
-rmcp = { version = "1.5", features = ["server", "transport-io"] }
+rmcp = { version = "=3.10.0", features = ["server", "transport-io"], optional = true }
 rustix = { version = "1", features = ["process"] }
-schemars = "1"
+schemars = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt", "macros", "io-std"] }
+tokio = { version = "1", features = ["rt", "macros", "io-std"], optional = true }
 toml = "0.8"
-tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
+toml1 = { package = "toml", version = "1.1", optional = true }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"], optional = true }
+mcp-layer = { git = "https://github.com/caniko/steampipe", rev = "1544cba5fb25eabc5c8ff3fb9f415bbd536c7230", optional = true }
+steampipe = { git = "https://github.com/caniko/steampipe", rev = "1544cba5fb25eabc5c8ff3fb9f415bbd536c7230", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

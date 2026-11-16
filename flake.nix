@@ -100,6 +100,7 @@
       };
 
       cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+      mcpCargoArtifacts = craneLib.buildDepsOnly (commonArgs // {cargoExtraArgs = "--features mcp";});
 
       fragpipePackage = craneLib.buildPackage (commonArgs
         // {
@@ -108,9 +109,9 @@
         });
       rawFragpipeMcpPackage = craneLib.buildPackage (commonArgs
         // {
-          inherit cargoArtifacts;
+          cargoArtifacts = mcpCargoArtifacts;
           pname = "fragpipe-mcp";
-          cargoExtraArgs = "--bin fragpipe-mcp";
+          cargoExtraArgs = "--features mcp --bin fragpipe-mcp";
         });
       fragpipeMcpPackage = pkgs.writeShellApplication {
         name = "fragpipe-mcp";
@@ -164,6 +165,13 @@
       checks = {
         default = fragpipePackage;
         fragpipe-mcp = rawFragpipeMcpPackage;
+        steampipe-revision = let
+          lock = builtins.fromTOML (builtins.readFile ./Cargo.lock);
+          packages = builtins.filter (p: p.name == "steampipe" || p.name == "mcp-layer") lock.package;
+          expected = "git+https://github.com/caniko/steampipe?rev=${steampipe.rev}#${steampipe.rev}";
+        in
+          assert builtins.length packages == 2 && builtins.all (p: (p.source or "") == expected) packages;
+            pkgs.runCommand "steampipe-revision" {} "touch $out";
 
         clippy = craneLib.cargoClippy (commonArgs
           // {
