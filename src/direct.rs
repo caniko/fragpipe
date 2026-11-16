@@ -49,6 +49,9 @@ pub struct TournamentRunOptions {
     pub local_ip: Option<IpAddr>,
     pub dry_run: bool,
     pub output_format: OutputFormat,
+    pub host_extra_args: Vec<String>,
+    pub joiner_extra_args: Vec<String>,
+    pub drop_args: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -144,6 +147,16 @@ pub fn run_direct_1v1(options: DirectRunOptions) -> Result<()> {
 }
 
 pub fn run_direct_tournament(options: TournamentRunOptions) -> Result<()> {
+    for arg in options
+        .host_extra_args
+        .iter()
+        .chain(&options.joiner_extra_args)
+        .chain(&options.drop_args)
+    {
+        if arg.chars().any(char::is_whitespace) {
+            bail!("argument elements cannot contain whitespace: {arg:?}");
+        }
+    }
     let config = load_config(&options.config_path)?;
     let tournament = config
         .tournament
@@ -191,6 +204,7 @@ pub fn run_direct_tournament(options: TournamentRunOptions) -> Result<()> {
         local_ip,
         timeout,
         dry_run: options.dry_run,
+        options: &options,
     };
     let mut passed = 0;
     let mut failed = 0;
@@ -236,6 +250,7 @@ struct TournamentRunContext<'a> {
     local_ip: IpAddr,
     timeout: Duration,
     dry_run: bool,
+    options: &'a TournamentRunOptions,
 }
 
 struct LocalTournamentPeer {
@@ -320,6 +335,7 @@ fn run_tournament_once_inner(context: &TournamentRunContext<'_>, run_dir: &Path)
         context.tournament.port,
         0,
         true,
+        context.options,
     );
     let host = spawn_logged(
         context.config,
@@ -359,6 +375,7 @@ fn run_tournament_once_inner(context: &TournamentRunContext<'_>, run_dir: &Path)
                 context.tournament.port,
                 index,
                 false,
+                context.options,
             );
             local.push(LocalTournamentPeer {
                 index,
@@ -384,6 +401,7 @@ fn run_tournament_once_inner(context: &TournamentRunContext<'_>, run_dir: &Path)
                 context.tournament.port,
                 index,
                 false,
+                context.options,
             );
             ssh::launch_remote_instance(
                 context.config,
@@ -522,19 +540,29 @@ fn tournament_args(
     port: u16,
     index: u8,
     host: bool,
+    options: &TournamentRunOptions,
 ) -> Vec<String> {
     let mut args = configured.to_vec();
+    args.extend(if host {
+        config.game.listener_extra_args.clone()
+    } else {
+        config.game.joiner_extra_args.clone()
+    });
+    args.retain(|arg| !options.drop_args.contains(arg));
+    args.extend(
+        if host {
+            &options.host_extra_args
+        } else {
+            &options.joiner_extra_args
+        }
+        .clone(),
+    );
     for arg in &mut args {
         *arg = arg
             .replace("{local_ip}", &local_ip.to_string())
             .replace("{port}", &port.to_string())
             .replace("{index}", &index.to_string());
     }
-    args.extend(if host {
-        config.game.listener_extra_args.clone()
-    } else {
-        config.game.joiner_extra_args.clone()
-    });
     args
 }
 
@@ -861,6 +889,21 @@ mod tests {
             "#,
         )
         .unwrap();
+        let options = TournamentRunOptions {
+            config_path: PathBuf::new(),
+            remote: String::new(),
+            max_runs: None,
+            timeout_secs: None,
+            stop_on_failure: true,
+            no_build: true,
+            no_deploy: true,
+            local_ip: None,
+            dry_run: true,
+            output_format: OutputFormat::Text,
+            host_extra_args: vec![],
+            joiner_extra_args: vec![],
+            drop_args: vec![],
+        };
         assert_eq!(
             tournament_args(
                 &[
@@ -874,8 +917,73 @@ mod tests {
                 27100,
                 4,
                 false,
+                &options,
             ),
             vec!["--join", "10.10.0.1:27100", "--identity-dir", "identity-4"]
+        );
+    }
+
+    #[test]
+    fn tournament_merge_drops_before_extras_and_expands_all_placeholders() {
+        let config: Config = toml::from_str(
+            r#"
+            [game]
+            binary = "game"
+            listener_extra_args = ["--headless", "game-{index}"]
+        "#,
+        )
+        .unwrap();
+        let options = TournamentRunOptions {
+            config_path: PathBuf::new(),
+            remote: String::new(),
+            max_runs: None,
+            timeout_secs: None,
+            stop_on_failure: true,
+            no_build: true,
+            no_deploy: true,
+            local_ip: None,
+            dry_run: true,
+            output_format: OutputFormat::Text,
+            host_extra_args: vec!["--headless".into(), "extra-{local_ip}:{port}".into()],
+            joiner_extra_args: vec![],
+            drop_args: vec!["--headless".into()],
+        };
+        assert_eq!(
+            tournament_args(
+                &["--headless".into(), "base-{index}".into()],
+                &config,
+                "10.10.0.1".parse().unwrap(),
+                27100,
+                4,
+                true,
+                &options
+            ),
+            ["base-4", "game-4", "--headless", "extra-10.10.0.1:27100"]
+        );
+    }
+
+    #[test]
+    fn tournament_rejects_whitespace_inside_argument_elements() {
+        let options = TournamentRunOptions {
+            config_path: PathBuf::new(),
+            remote: String::new(),
+            max_runs: None,
+            timeout_secs: None,
+            stop_on_failure: true,
+            no_build: true,
+            no_deploy: true,
+            local_ip: None,
+            dry_run: true,
+            output_format: OutputFormat::Text,
+            host_extra_args: vec!["two words".into()],
+            joiner_extra_args: vec![],
+            drop_args: vec![],
+        };
+        assert!(
+            run_direct_tournament(options)
+                .unwrap_err()
+                .to_string()
+                .contains("whitespace")
         );
     }
 }

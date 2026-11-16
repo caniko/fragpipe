@@ -52,6 +52,8 @@ enum Commands {
     /// Run a multi-process physical-peer LAN tournament through SSH.
     #[command(name = "direct-tournament")]
     DirectTournament(DirectTournamentArgs),
+    /// Stop remote direct-run processes.
+    DirectStop(DirectStopArgs),
     /// Run the forced-relay internet 1v1 smoke test.
     #[command(name = "internet-1v1")]
     Internet1v1(Internet1v1Args),
@@ -335,6 +337,18 @@ struct DirectTournamentArgs {
     #[arg(long)]
     local_ip: Option<IpAddr>,
 
+    /// Whitespace-separated arguments appended to the tournament host.
+    #[arg(long, allow_hyphen_values = true)]
+    host_extra_args: Option<String>,
+
+    /// Whitespace-separated arguments appended to every tournament joiner.
+    #[arg(long, allow_hyphen_values = true)]
+    joiner_extra_args: Option<String>,
+
+    /// Whitespace-separated configured arguments removed from both roles.
+    #[arg(long, allow_hyphen_values = true)]
+    drop_args: Option<String>,
+
     /// Print commands without launching or SSHing.
     #[arg(long)]
     dry_run: bool,
@@ -342,6 +356,27 @@ struct DirectTournamentArgs {
     /// Output format.
     #[arg(long, default_value = "text")]
     output_format: CliOutputFormat,
+}
+
+#[derive(Debug, Parser)]
+struct DirectStopArgs {
+    #[arg(long, default_value = "fragpipe.toml")]
+    config: PathBuf,
+    #[arg(long)]
+    remote: String,
+    /// Stop all configured remote tournament instances instead of a 1v1 peer.
+    #[arg(long)]
+    tournament: bool,
+    #[arg(long)]
+    dry_run: bool,
+}
+
+fn split_args(value: Option<String>) -> Vec<String> {
+    value
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect()
 }
 
 #[derive(Debug, Parser)]
@@ -578,12 +613,36 @@ pub fn run(cli: Cli) -> Result<()> {
             no_build: args.no_build,
             no_deploy: args.no_deploy,
             local_ip: args.local_ip,
+            host_extra_args: split_args(args.host_extra_args),
+            joiner_extra_args: split_args(args.joiner_extra_args),
+            drop_args: split_args(args.drop_args),
             dry_run: args.dry_run,
             output_format: match args.output_format {
                 CliOutputFormat::Text => DirectOutputFormat::Text,
                 CliOutputFormat::Jsonl => DirectOutputFormat::Jsonl,
             },
         }),
+        Commands::DirectStop(args) => {
+            let config = config::load_config(&args.config)?;
+            let remote = config::select_remote(&config, &args.remote)?;
+            if args.tournament {
+                let tournament = config.tournament.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "direct-stop --tournament requires a [tournament] config section"
+                    )
+                })?;
+                let end = tournament
+                    .local_players
+                    .checked_add(tournament.remote_players)
+                    .ok_or_else(|| anyhow::anyhow!("direct-tournament player count overflow"))?;
+                for index in tournament.local_players..end {
+                    ssh::stop_remote_instance(remote, index, args.dry_run)?;
+                }
+                Ok(())
+            } else {
+                ssh::stop_remote(&config, remote, args.dry_run)
+            }
+        }
         Commands::Internet1v1(args) => run_internet_1v1(InternetRunOptions {
             config_path: args.config,
             max_runs: args.max_runs,
@@ -743,6 +802,9 @@ mod tests {
             "--no-deploy",
             "--local-ip",
             "10.10.0.1",
+            "--host-extra-args=--lobby-start --foo",
+            "--joiner-extra-args=--join-extra",
+            "--drop-args=--headless",
             "--dry-run",
             "--output-format",
             "jsonl",
@@ -755,11 +817,30 @@ mod tests {
             assert!(args.no_build);
             assert!(args.no_deploy);
             assert_eq!(args.local_ip, Some("10.10.0.1".parse().unwrap()));
+            assert_eq!(split_args(args.host_extra_args), ["--lobby-start", "--foo"]);
+            assert_eq!(split_args(args.joiner_extra_args), ["--join-extra"]);
+            assert_eq!(split_args(args.drop_args), ["--headless"]);
             assert!(args.dry_run);
             assert!(matches!(args.output_format, CliOutputFormat::Jsonl));
         } else {
             panic!("expected DirectTournament variant");
         }
+    }
+
+    #[test]
+    fn direct_stop_parses_tournament() {
+        let cli = Cli::try_parse_from([
+            "fragpipe",
+            "direct-stop",
+            "--remote",
+            "nomad",
+            "--tournament",
+            "--dry-run",
+        ])
+        .unwrap();
+        assert!(
+            matches!(cli.command, Commands::DirectStop(args) if args.tournament && args.dry_run)
+        );
     }
 
     #[test]

@@ -45,6 +45,21 @@ joiner_args = [
   "--headless",
 ]
 
+[tournament]
+local_ip = "10.10.0.1"
+port = 27100
+local_players = 2
+remote_players = 1
+ready_marker = "Tournament host started on port"
+pass_marker = "Tournament over! Final standings:"
+host_args = ["--auto-host-tournament", "--auto-play", "--headless"]
+joiner_args = ["--auto-join-tournament", "--udp-addr", "{local_ip}:{port}", "--auto-play", "--headless"]
+
+[[remote]]
+name = "example-peer"
+host = "example-peer"
+remote_dir = "/home/can/chessbender-fragpipe"
+
 # Optional two-machine validation:
 # [[remote]]
 # name = "example-peer"
