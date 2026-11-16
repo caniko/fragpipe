@@ -28,6 +28,8 @@ pub struct Config {
     #[serde(default)]
     #[serde(rename = "steampipe_command")]
     pub _steampipe_command: Option<String>,
+    #[serde(default, rename = "job_profiles")]
+    pub _job_profiles: Option<toml::Table>,
 }
 
 #[derive(Debug, Deserialize)]

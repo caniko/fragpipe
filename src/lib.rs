@@ -3,6 +3,8 @@ pub mod android_worker;
 pub mod config;
 pub mod direct;
 pub mod logwatch;
+#[cfg(feature = "mcp")]
+pub mod mcp;
 pub mod process;
 pub mod runner;
 pub mod session;

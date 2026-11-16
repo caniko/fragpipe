@@ -218,6 +218,7 @@ WEBRTC_JOIN_ADDR=/ip4/10.88.0.1/udp/27200/webrtc-direct/certhash/uEiHash
             android: None,
             remote: Vec::new(),
             _steampipe_command: None,
+            _job_profiles: None,
         }
     }
 }
