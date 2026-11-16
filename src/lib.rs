@@ -372,7 +372,11 @@ struct DirectStopArgs {
 }
 
 fn split_args(value: Option<String>) -> Vec<String> {
-    value.unwrap_or_default().split_whitespace().map(str::to_owned).collect()
+    value
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect()
 }
 
 #[derive(Debug, Parser)]
@@ -623,9 +627,13 @@ pub fn run(cli: Cli) -> Result<()> {
             let remote = config::select_remote(&config, &args.remote)?;
             if args.tournament {
                 let tournament = config.tournament.as_ref().ok_or_else(|| {
-                    anyhow::anyhow!("direct-stop --tournament requires a [tournament] config section")
+                    anyhow::anyhow!(
+                        "direct-stop --tournament requires a [tournament] config section"
+                    )
                 })?;
-                let end = tournament.local_players.checked_add(tournament.remote_players)
+                let end = tournament
+                    .local_players
+                    .checked_add(tournament.remote_players)
                     .ok_or_else(|| anyhow::anyhow!("direct-tournament player count overflow"))?;
                 for index in tournament.local_players..end {
                     ssh::stop_remote_instance(remote, index, args.dry_run)?;
@@ -822,9 +830,17 @@ mod tests {
     #[test]
     fn direct_stop_parses_tournament() {
         let cli = Cli::try_parse_from([
-            "fragpipe", "direct-stop", "--remote", "nomad", "--tournament", "--dry-run",
-        ]).unwrap();
-        assert!(matches!(cli.command, Commands::DirectStop(args) if args.tournament && args.dry_run));
+            "fragpipe",
+            "direct-stop",
+            "--remote",
+            "nomad",
+            "--tournament",
+            "--dry-run",
+        ])
+        .unwrap();
+        assert!(
+            matches!(cli.command, Commands::DirectStop(args) if args.tournament && args.dry_run)
+        );
     }
 
     #[test]

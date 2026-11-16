@@ -147,7 +147,9 @@ pub fn run_direct_1v1(options: DirectRunOptions) -> Result<()> {
 }
 
 pub fn run_direct_tournament(options: TournamentRunOptions) -> Result<()> {
-    for arg in options.host_extra_args.iter()
+    for arg in options
+        .host_extra_args
+        .iter()
         .chain(&options.joiner_extra_args)
         .chain(&options.drop_args)
     {
@@ -547,7 +549,14 @@ fn tournament_args(
         config.game.joiner_extra_args.clone()
     });
     args.retain(|arg| !options.drop_args.contains(arg));
-    args.extend(if host { &options.host_extra_args } else { &options.joiner_extra_args }.clone());
+    args.extend(
+        if host {
+            &options.host_extra_args
+        } else {
+            &options.joiner_extra_args
+        }
+        .clone(),
+    );
     for arg in &mut args {
         *arg = arg
             .replace("{local_ip}", &local_ip.to_string())
@@ -881,10 +890,19 @@ mod tests {
         )
         .unwrap();
         let options = TournamentRunOptions {
-            config_path: PathBuf::new(), remote: String::new(), max_runs: None,
-            timeout_secs: None, stop_on_failure: true, no_build: true, no_deploy: true,
-            local_ip: None, dry_run: true, output_format: OutputFormat::Text,
-            host_extra_args: vec![], joiner_extra_args: vec![], drop_args: vec![],
+            config_path: PathBuf::new(),
+            remote: String::new(),
+            max_runs: None,
+            timeout_secs: None,
+            stop_on_failure: true,
+            no_build: true,
+            no_deploy: true,
+            local_ip: None,
+            dry_run: true,
+            output_format: OutputFormat::Text,
+            host_extra_args: vec![],
+            joiner_extra_args: vec![],
+            drop_args: vec![],
         };
         assert_eq!(
             tournament_args(
@@ -907,21 +925,39 @@ mod tests {
 
     #[test]
     fn tournament_merge_drops_before_extras_and_expands_all_placeholders() {
-        let config: Config = toml::from_str(r#"
+        let config: Config = toml::from_str(
+            r#"
             [game]
             binary = "game"
             listener_extra_args = ["--headless", "game-{index}"]
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         let options = TournamentRunOptions {
-            config_path: PathBuf::new(), remote: String::new(), max_runs: None,
-            timeout_secs: None, stop_on_failure: true, no_build: true, no_deploy: true,
-            local_ip: None, dry_run: true, output_format: OutputFormat::Text,
+            config_path: PathBuf::new(),
+            remote: String::new(),
+            max_runs: None,
+            timeout_secs: None,
+            stop_on_failure: true,
+            no_build: true,
+            no_deploy: true,
+            local_ip: None,
+            dry_run: true,
+            output_format: OutputFormat::Text,
             host_extra_args: vec!["--headless".into(), "extra-{local_ip}:{port}".into()],
-            joiner_extra_args: vec![], drop_args: vec!["--headless".into()],
+            joiner_extra_args: vec![],
+            drop_args: vec!["--headless".into()],
         };
         assert_eq!(
-            tournament_args(&["--headless".into(), "base-{index}".into()], &config,
-                "10.10.0.1".parse().unwrap(), 27100, 4, true, &options),
+            tournament_args(
+                &["--headless".into(), "base-{index}".into()],
+                &config,
+                "10.10.0.1".parse().unwrap(),
+                27100,
+                4,
+                true,
+                &options
+            ),
             ["base-4", "game-4", "--headless", "extra-10.10.0.1:27100"]
         );
     }
@@ -929,12 +965,25 @@ mod tests {
     #[test]
     fn tournament_rejects_whitespace_inside_argument_elements() {
         let options = TournamentRunOptions {
-            config_path: PathBuf::new(), remote: String::new(), max_runs: None,
-            timeout_secs: None, stop_on_failure: true, no_build: true, no_deploy: true,
-            local_ip: None, dry_run: true, output_format: OutputFormat::Text,
+            config_path: PathBuf::new(),
+            remote: String::new(),
+            max_runs: None,
+            timeout_secs: None,
+            stop_on_failure: true,
+            no_build: true,
+            no_deploy: true,
+            local_ip: None,
+            dry_run: true,
+            output_format: OutputFormat::Text,
             host_extra_args: vec!["two words".into()],
-            joiner_extra_args: vec![], drop_args: vec![],
+            joiner_extra_args: vec![],
+            drop_args: vec![],
         };
-        assert!(run_direct_tournament(options).unwrap_err().to_string().contains("whitespace"));
+        assert!(
+            run_direct_tournament(options)
+                .unwrap_err()
+                .to_string()
+                .contains("whitespace")
+        );
     }
 }
