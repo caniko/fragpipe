@@ -112,8 +112,14 @@ jobs:
       - name: Test all features
         run: nix develop -c cargo test --all-features
 
+      - name: Test no default features
+        run: nix develop -c cargo test --no-default-features
+
       - name: Clippy all features
         run: nix develop -c cargo clippy --all-targets --all-features -- --deny warnings
+
+      - name: Clippy no default features
+        run: nix develop -c cargo clippy --all-targets --no-default-features -- --deny warnings
 
       - name: Dry-run publish
         run: nix develop -c cargo publish --dry-run
@@ -126,6 +132,8 @@ jobs:
           nix develop -c cargo package --locked --allow-dirty --no-verify -p fragpipe --target-dir "$RUNNER_TEMP/simit-package-target"
           mkdir -p "$RUNNER_TEMP/simit-crates/fragpipe"
           cp "$RUNNER_TEMP/simit-package-target/package/fragpipe-$version.crate" "$RUNNER_TEMP/simit-crates/fragpipe/"
+          size="$(wc -c < "$RUNNER_TEMP/simit-crates/fragpipe/fragpipe-$version.crate")"
+          test "$size" -le 10485760 || { echo "crate fragpipe archive is $size bytes, over the crates.io upload limit of 10485760 bytes (10 MiB)" >&2; exit 1; }
       - name: Retain original-run archive fragpipe
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
