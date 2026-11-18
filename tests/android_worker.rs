@@ -87,24 +87,49 @@ fn write_executable(path: &Path, text: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
 }
 
+/// Authoritative, but briefly takes the lock: only use it once nothing else
+/// is trying to acquire the slot.
 fn lock_is_free(path: &Path) -> bool {
-    let inode = match fs::metadata(path) {
-        Ok(metadata) => metadata.ino(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return true,
-        Err(error) => panic!("{}: {error}", path.display()),
+    Command::new("flock")
+        .arg("-n")
+        .arg(path)
+        .arg("true")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap()
+        .success()
+}
+
+/// Passive check that never contends with a controller still acquiring the
+/// slot. Matches the inode alone: /proc/locks reports the superblock device,
+/// which differs from stat's st_dev on btrfs subvolumes.
+fn lock_is_held(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
     };
-    // Inode alone is sufficient for this temporary-directory fixture.
-    !fs::read_to_string("/proc/locks").unwrap().lines().any(|line| {
-        let mut fields = line.split_whitespace();
-        fields.nth(1) == Some("FLOCK")
-            && fields.nth(3).and_then(|device| device.rsplit(':').next())
-                == Some(&inode.to_string())
-    })
+    let inode = metadata.ino().to_string();
+    fs::read_to_string("/proc/locks")
+        .unwrap()
+        .lines()
+        .any(|line| {
+            let mut fields = line.split_whitespace();
+            fields.nth(1) == Some("FLOCK")
+                && fields.nth(3).and_then(|device| device.rsplit(':').next())
+                    == Some(inode.as_str())
+        })
 }
 
 fn wait_for(path: &Path, expected_free: bool) {
     let started = Instant::now();
-    while lock_is_free(path) != expected_free {
+    let done = || {
+        if expected_free {
+            lock_is_free(path)
+        } else {
+            lock_is_held(path)
+        }
+    };
+    while !done() {
         // Generous for loaded CI runners; the release tests keep their payloads alive.
         assert!(
             started.elapsed() < Duration::from_secs(60),
