@@ -94,18 +94,27 @@ fn write_executable(path: &Path, text: &str) {
 fn until(what: &Path, ok: impl Fn() -> bool) {
     let started = Instant::now();
     while !ok() {
-        assert!(started.elapsed() < Duration::from_secs(60), "timed out: {what:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "timed out: {what:?}"
+        );
         thread::sleep(Duration::from_millis(25));
     }
 }
 
 fn released(path: &Path) {
-    // Existing inode only; an independent OFD. The temporary Command and its
-    // stdin File both drop before the caller can start a retry.
+    // Existing inode only, on an independent OFD; read-write so an exclusive
+    // flock also works where it needs a writable descriptor (NFS). The
+    // temporary Command and its stdin File both drop before any retry starts.
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .unwrap();
     assert!(
         Command::new("flock")
             .args(["-w", "60", "0"])
-            .stdin(fs::File::open(path).unwrap())
+            .stdin(file)
             .status()
             .unwrap()
             .success()
@@ -124,9 +133,20 @@ fn echo(f: &Fixture, input: &mut ChildStdin, bytes: &[u8]) {
     until(&path, || fs::read(&path).is_ok_and(|v| v == bytes));
 }
 
-fn first(f: &Fixture) -> (Child, ChildStdin) {
+/// Kills and reaps a controller the test did not reap itself, also on unwind,
+/// so a failed readiness wait cannot leave it holding CI's stderr.
+struct Lease(Child);
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn first(f: &Fixture) -> (Lease, ChildStdin) {
     let d = f._dir.path();
-    let mut c = f
+    let child = f
         .fragpipe()
         .args(["--slot", "slot-0", "--", "tee"])
         .arg(d.join("echo"))
@@ -134,14 +154,16 @@ fn first(f: &Fixture) -> (Child, ChildStdin) {
         .stdout(Stdio::null())
         .spawn()
         .unwrap();
-    let mut input = c.stdin.take().unwrap();
+    let mut lease = Lease(child);
+    let mut input = lease.0.stdin.take().unwrap();
     echo(f, &mut input, b"A");
-    (c, input)
+    (lease, input)
 }
 
-fn kill_and_release(f: &Fixture, c: &mut Child) {
-    c.kill().unwrap();
-    assert_eq!(c.wait().unwrap().signal(), Some(Signal::KILL.as_raw()));
+fn kill_and_release(f: &Fixture, lease: &mut Lease) {
+    lease.0.kill().unwrap();
+    let status = lease.0.wait().unwrap();
+    assert_eq!(status.signal(), Some(Signal::KILL.as_raw()));
     released(&f.lock("slot-0"));
 }
 
@@ -165,7 +187,8 @@ fn partial_acquisition_releases_earlier_locks() {
         .output()
         .unwrap();
     assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("slot `slot-1` is already leased"));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("slot `slot-1` is already leased"), "{stderr}");
     released(&fixture.lock("slot-0"));
 }
 
