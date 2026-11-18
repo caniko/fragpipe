@@ -102,7 +102,14 @@ fn lock_is_free(path: &Path) -> bool {
 fn wait_for(path: &Path, expected_free: bool) {
     let started = Instant::now();
     while lock_is_free(path) != expected_free {
-        assert!(started.elapsed() < Duration::from_secs(5));
+        // Generous for loaded CI runners, yet far below the 600 s leases the
+        // release tests kill, so a lock that only frees on lease exit still fails.
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "{} never became {}",
+            path.display(),
+            if expected_free { "free" } else { "held" }
+        );
         thread::sleep(Duration::from_millis(25));
     }
 }
@@ -147,7 +154,7 @@ fn competing_lease_is_rejected() {
     let fixture = Fixture::new(1);
     let mut first = fixture
         .fragpipe()
-        .args(["--slot", "slot-0", "--", "sleep", "30"])
+        .args(["--slot", "slot-0", "--", "sleep", "600"])
         .stdout(Stdio::null())
         .spawn()
         .unwrap();
@@ -177,7 +184,7 @@ fn killing_controller_releases_remote_lock() {
     let fixture = Fixture::new(1);
     let mut controller = fixture
         .fragpipe()
-        .args(["--slot", "slot-0", "--", "sleep", "30"])
+        .args(["--slot", "slot-0", "--", "sleep", "600"])
         .stdout(Stdio::null())
         .spawn()
         .unwrap();
