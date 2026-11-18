@@ -1,9 +1,12 @@
 #![cfg(target_os = "linux")]
 
+use rustix::process::Signal;
 use std::fs;
+use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::process::ExitStatusExt as _;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -72,6 +75,7 @@ adb_serial = "serial-{index}"
         let mut command = Command::new(env!("CARGO_BIN_EXE_fragpipe"));
         command
             .env("PATH", &self.path)
+            .env("TMPDIR", self._dir.path())
             .args(["android-with", "--workers-config"])
             .arg(&self.config);
         command
@@ -87,34 +91,80 @@ fn write_executable(path: &Path, text: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
 }
 
-fn lock_is_free(path: &Path) -> bool {
-    Command::new("flock")
-        .arg("-n")
-        .arg(path)
-        .arg("true")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .unwrap()
-        .success()
-}
-
-fn wait_for(path: &Path, expected_free: bool) {
+fn until(what: &Path, ok: impl Fn() -> bool) {
     let started = Instant::now();
-    while lock_is_free(path) != expected_free {
-        assert!(started.elapsed() < Duration::from_secs(5));
+    while !ok() {
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "timed out: {what:?}"
+        );
         thread::sleep(Duration::from_millis(25));
     }
 }
 
-fn hold_lock(path: &Path) -> Child {
-    let child = Command::new("flock")
-        .arg(path)
-        .args(["sleep", "30"])
+fn released(path: &Path) {
+    // Existing inode only, on an independent OFD; read-write so an exclusive
+    // flock also works where it needs a writable descriptor (NFS). The
+    // temporary Command and its stdin File both drop before any retry starts.
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .unwrap();
+    assert!(
+        Command::new("flock")
+            .args(["-w", "60", "0"])
+            .stdin(file)
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+fn hold_lock(path: &Path) -> fs::File {
+    let f = fs::File::create_new(path).unwrap();
+    f.try_lock().unwrap();
+    f
+}
+
+fn echo(f: &Fixture, input: &mut ChildStdin, bytes: &[u8]) {
+    let path = f._dir.path().join("echo");
+    input.write_all(&bytes[bytes.len() - 1..]).unwrap();
+    until(&path, || fs::read(&path).is_ok_and(|v| v == bytes));
+}
+
+/// Kills and reaps a controller the test did not reap itself, also on unwind,
+/// so a failed readiness wait cannot leave it holding CI's stderr.
+struct Lease(Child);
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn first(f: &Fixture) -> (Lease, ChildStdin) {
+    let d = f._dir.path();
+    let child = f
+        .fragpipe()
+        .args(["--slot", "slot-0", "--", "tee"])
+        .arg(d.join("echo"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
         .spawn()
         .unwrap();
-    wait_for(path, false);
-    child
+    let mut lease = Lease(child);
+    let mut input = lease.0.stdin.take().unwrap();
+    echo(f, &mut input, b"A");
+    (lease, input)
+}
+
+fn kill_and_release(f: &Fixture, lease: &mut Lease) {
+    lease.0.kill().unwrap();
+    let status = lease.0.wait().unwrap();
+    assert_eq!(status.signal(), Some(Signal::KILL.as_raw()));
+    released(&f.lock("slot-0"));
 }
 
 fn run_one_slot(fixture: &Fixture, command: &[&str]) -> ExitStatus {
@@ -130,28 +180,25 @@ fn run_one_slot(fixture: &Fixture, command: &[&str]) -> ExitStatus {
 fn partial_acquisition_releases_earlier_locks() {
     let fixture = Fixture::new(2);
     let second = fixture.lock("slot-1");
-    let mut holder = hold_lock(&second);
-    let status = fixture
+    let _holder = hold_lock(&second);
+    let out = fixture
         .fragpipe()
         .args(["--slot", "slot-0", "--slot", "slot-1", "--", "true"])
-        .status()
+        .output()
         .unwrap();
-    assert!(!status.success());
-    assert!(lock_is_free(&fixture.lock("slot-0")));
-    holder.kill().unwrap();
-    holder.wait().unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("slot `slot-1` is already leased"),
+        "{stderr}"
+    );
+    released(&fixture.lock("slot-0"));
 }
 
 #[test]
 fn competing_lease_is_rejected() {
     let fixture = Fixture::new(1);
-    let mut first = fixture
-        .fragpipe()
-        .args(["--slot", "slot-0", "--", "sleep", "30"])
-        .stdout(Stdio::null())
-        .spawn()
-        .unwrap();
-    wait_for(&fixture.lock("slot-0"), false);
+    let (mut first, mut input) = first(&fixture);
     let output = fixture
         .fragpipe()
         .args(["--slot", "slot-0", "--", "true"])
@@ -159,9 +206,8 @@ fn competing_lease_is_rejected() {
         .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("already leased"));
-    first.kill().unwrap();
-    first.wait().unwrap();
-    wait_for(&fixture.lock("slot-0"), true);
+    kill_and_release(&fixture, &mut first);
+    echo(&fixture, &mut input, b"AB");
 }
 
 #[test]
@@ -169,21 +215,14 @@ fn command_exit_code_is_propagated() {
     let fixture = Fixture::new(1);
     let status = run_one_slot(&fixture, &["sh", "-c", "exit 42"]);
     assert_eq!(status.code(), Some(42));
-    assert!(lock_is_free(&fixture.lock("slot-0")));
+    released(&fixture.lock("slot-0"));
 }
 
 #[test]
 fn killing_controller_releases_remote_lock() {
     let fixture = Fixture::new(1);
-    let mut controller = fixture
-        .fragpipe()
-        .args(["--slot", "slot-0", "--", "sleep", "30"])
-        .stdout(Stdio::null())
-        .spawn()
-        .unwrap();
-    wait_for(&fixture.lock("slot-0"), false);
-    controller.kill().unwrap();
-    controller.wait().unwrap();
-    wait_for(&fixture.lock("slot-0"), true);
+    let (mut controller, mut input) = first(&fixture);
+    kill_and_release(&fixture, &mut controller);
     assert!(run_one_slot(&fixture, &["true"]).success());
+    echo(&fixture, &mut input, b"AB");
 }
