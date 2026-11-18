@@ -1,9 +1,12 @@
 #![cfg(target_os = "linux")]
 
+use rustix::process::Signal;
 use std::fs;
-use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+use std::io::Write as _;
+use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::process::ExitStatusExt as _;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -72,6 +75,7 @@ adb_serial = "serial-{index}"
         let mut command = Command::new(env!("CARGO_BIN_EXE_fragpipe"));
         command
             .env("PATH", &self.path)
+            .env("TMPDIR", self._dir.path())
             .args(["android-with", "--workers-config"])
             .arg(&self.config);
         command
@@ -87,68 +91,58 @@ fn write_executable(path: &Path, text: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
 }
 
-/// Authoritative, but briefly takes the lock: only use it once nothing else
-/// is trying to acquire the slot.
-fn lock_is_free(path: &Path) -> bool {
-    Command::new("flock")
-        .arg("-n")
-        .arg(path)
-        .arg("true")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .unwrap()
-        .success()
-}
-
-/// Passive check that never contends with a controller still acquiring the
-/// slot. Matches the inode alone: /proc/locks reports the superblock device,
-/// which differs from stat's st_dev on btrfs subvolumes.
-fn lock_is_held(path: &Path) -> bool {
-    let Ok(metadata) = fs::metadata(path) else {
-        return false;
-    };
-    let inode = metadata.ino().to_string();
-    fs::read_to_string("/proc/locks")
-        .unwrap()
-        .lines()
-        .any(|line| {
-            let mut fields = line.split_whitespace();
-            fields.nth(1) == Some("FLOCK")
-                && fields.nth(3).and_then(|device| device.rsplit(':').next())
-                    == Some(inode.as_str())
-        })
-}
-
-fn wait_for(path: &Path, expected_free: bool) {
+fn until(what: &Path, ok: impl Fn() -> bool) {
     let started = Instant::now();
-    let done = || {
-        if expected_free {
-            lock_is_free(path)
-        } else {
-            lock_is_held(path)
-        }
-    };
-    while !done() {
-        // Generous for loaded CI runners; the release tests keep their payloads alive.
-        assert!(
-            started.elapsed() < Duration::from_secs(60),
-            "{} never became {}",
-            path.display(),
-            if expected_free { "free" } else { "held" }
-        );
+    while !ok() {
+        assert!(started.elapsed() < Duration::from_secs(60), "timed out: {what:?}");
         thread::sleep(Duration::from_millis(25));
     }
 }
 
-fn hold_lock(path: &Path) -> Child {
-    let child = Command::new("flock")
-        .arg(path)
-        .args(["sleep", "30"])
+fn released(path: &Path) {
+    // Existing inode only; an independent OFD. The temporary Command and its
+    // stdin File both drop before the caller can start a retry.
+    assert!(
+        Command::new("flock")
+            .args(["-w", "60", "0"])
+            .stdin(fs::File::open(path).unwrap())
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+fn hold_lock(path: &Path) -> fs::File {
+    let f = fs::File::create_new(path).unwrap();
+    f.try_lock().unwrap();
+    f
+}
+
+fn echo(f: &Fixture, input: &mut ChildStdin, bytes: &[u8]) {
+    let path = f._dir.path().join("echo");
+    input.write_all(&bytes[bytes.len() - 1..]).unwrap();
+    until(&path, || fs::read(&path).is_ok_and(|v| v == bytes));
+}
+
+fn first(f: &Fixture) -> (Child, ChildStdin) {
+    let d = f._dir.path();
+    let mut c = f
+        .fragpipe()
+        .args(["--slot", "slot-0", "--", "tee"])
+        .arg(d.join("echo"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
         .spawn()
         .unwrap();
-    wait_for(path, false);
-    child
+    let mut input = c.stdin.take().unwrap();
+    echo(f, &mut input, b"A");
+    (c, input)
+}
+
+fn kill_and_release(f: &Fixture, c: &mut Child) {
+    c.kill().unwrap();
+    assert_eq!(c.wait().unwrap().signal(), Some(Signal::KILL.as_raw()));
+    released(&f.lock("slot-0"));
 }
 
 fn run_one_slot(fixture: &Fixture, command: &[&str]) -> ExitStatus {
@@ -164,30 +158,21 @@ fn run_one_slot(fixture: &Fixture, command: &[&str]) -> ExitStatus {
 fn partial_acquisition_releases_earlier_locks() {
     let fixture = Fixture::new(2);
     let second = fixture.lock("slot-1");
-    let mut holder = hold_lock(&second);
-    let status = fixture
+    let _holder = hold_lock(&second);
+    let out = fixture
         .fragpipe()
         .args(["--slot", "slot-0", "--slot", "slot-1", "--", "true"])
-        .status()
+        .output()
         .unwrap();
-    assert!(!status.success());
-    wait_for(&fixture.lock("slot-0"), true);
-    holder.kill().unwrap();
-    holder.wait().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("slot `slot-1` is already leased"));
+    released(&fixture.lock("slot-0"));
 }
 
 #[test]
 fn competing_lease_is_rejected() {
     let fixture = Fixture::new(1);
-    let mut first = fixture
-        .fragpipe()
-        .args(["--slot", "slot-0", "--", "cat"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .spawn()
-        .unwrap();
-    let stdin = first.stdin.take().unwrap();
-    wait_for(&fixture.lock("slot-0"), false);
+    let (mut first, mut input) = first(&fixture);
     let output = fixture
         .fragpipe()
         .args(["--slot", "slot-0", "--", "true"])
@@ -195,10 +180,8 @@ fn competing_lease_is_rejected() {
         .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("already leased"));
-    first.kill().unwrap();
-    first.wait().unwrap();
-    wait_for(&fixture.lock("slot-0"), true);
-    drop(stdin);
+    kill_and_release(&fixture, &mut first);
+    echo(&fixture, &mut input, b"AB");
 }
 
 #[test]
@@ -206,24 +189,14 @@ fn command_exit_code_is_propagated() {
     let fixture = Fixture::new(1);
     let status = run_one_slot(&fixture, &["sh", "-c", "exit 42"]);
     assert_eq!(status.code(), Some(42));
-    wait_for(&fixture.lock("slot-0"), true);
+    released(&fixture.lock("slot-0"));
 }
 
 #[test]
 fn killing_controller_releases_remote_lock() {
     let fixture = Fixture::new(1);
-    let mut controller = fixture
-        .fragpipe()
-        .args(["--slot", "slot-0", "--", "cat"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .spawn()
-        .unwrap();
-    let stdin = controller.stdin.take().unwrap();
-    wait_for(&fixture.lock("slot-0"), false);
-    controller.kill().unwrap();
-    controller.wait().unwrap();
-    wait_for(&fixture.lock("slot-0"), true);
-    drop(stdin);
+    let (mut controller, mut input) = first(&fixture);
+    kill_and_release(&fixture, &mut controller);
     assert!(run_one_slot(&fixture, &["true"]).success());
+    echo(&fixture, &mut input, b"AB");
 }
