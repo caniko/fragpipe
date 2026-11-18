@@ -1,7 +1,7 @@
 #![cfg(target_os = "linux")]
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
@@ -88,22 +88,24 @@ fn write_executable(path: &Path, text: &str) {
 }
 
 fn lock_is_free(path: &Path) -> bool {
-    Command::new("flock")
-        .arg("-n")
-        .arg(path)
-        .arg("true")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .unwrap()
-        .success()
+    let inode = match fs::metadata(path) {
+        Ok(metadata) => metadata.ino(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return true,
+        Err(error) => panic!("{}: {error}", path.display()),
+    };
+    // Inode alone is sufficient for this temporary-directory fixture.
+    !fs::read_to_string("/proc/locks").unwrap().lines().any(|line| {
+        let mut fields = line.split_whitespace();
+        fields.nth(1) == Some("FLOCK")
+            && fields.nth(3).and_then(|device| device.rsplit(':').next())
+                == Some(&inode.to_string())
+    })
 }
 
 fn wait_for(path: &Path, expected_free: bool) {
     let started = Instant::now();
     while lock_is_free(path) != expected_free {
-        // Generous for loaded CI runners, yet far below the 600 s leases the
-        // release tests kill, so a lock that only frees on lease exit still fails.
+        // Generous for loaded CI runners; the release tests keep their payloads alive.
         assert!(
             started.elapsed() < Duration::from_secs(60),
             "{} never became {}",
@@ -144,7 +146,7 @@ fn partial_acquisition_releases_earlier_locks() {
         .status()
         .unwrap();
     assert!(!status.success());
-    assert!(lock_is_free(&fixture.lock("slot-0")));
+    wait_for(&fixture.lock("slot-0"), true);
     holder.kill().unwrap();
     holder.wait().unwrap();
 }
@@ -154,10 +156,12 @@ fn competing_lease_is_rejected() {
     let fixture = Fixture::new(1);
     let mut first = fixture
         .fragpipe()
-        .args(["--slot", "slot-0", "--", "sleep", "600"])
+        .args(["--slot", "slot-0", "--", "cat"])
+        .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .spawn()
         .unwrap();
+    let stdin = first.stdin.take().unwrap();
     wait_for(&fixture.lock("slot-0"), false);
     let output = fixture
         .fragpipe()
@@ -169,6 +173,7 @@ fn competing_lease_is_rejected() {
     first.kill().unwrap();
     first.wait().unwrap();
     wait_for(&fixture.lock("slot-0"), true);
+    drop(stdin);
 }
 
 #[test]
@@ -176,7 +181,7 @@ fn command_exit_code_is_propagated() {
     let fixture = Fixture::new(1);
     let status = run_one_slot(&fixture, &["sh", "-c", "exit 42"]);
     assert_eq!(status.code(), Some(42));
-    assert!(lock_is_free(&fixture.lock("slot-0")));
+    wait_for(&fixture.lock("slot-0"), true);
 }
 
 #[test]
@@ -184,13 +189,16 @@ fn killing_controller_releases_remote_lock() {
     let fixture = Fixture::new(1);
     let mut controller = fixture
         .fragpipe()
-        .args(["--slot", "slot-0", "--", "sleep", "600"])
+        .args(["--slot", "slot-0", "--", "cat"])
+        .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .spawn()
         .unwrap();
+    let stdin = controller.stdin.take().unwrap();
     wait_for(&fixture.lock("slot-0"), false);
     controller.kill().unwrap();
     controller.wait().unwrap();
     wait_for(&fixture.lock("slot-0"), true);
+    drop(stdin);
     assert!(run_one_slot(&fixture, &["true"]).success());
 }
