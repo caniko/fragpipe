@@ -188,7 +188,10 @@ fn partial_acquisition_releases_earlier_locks() {
         .unwrap();
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("slot `slot-1` is already leased"), "{stderr}");
+    assert!(
+        stderr.contains("slot `slot-1` is already leased"),
+        "{stderr}"
+    );
     released(&fixture.lock("slot-0"));
 }
 
