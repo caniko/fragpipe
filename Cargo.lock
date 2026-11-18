@@ -1811,7 +1811,7 @@ dependencies = [
 [[package]]
 name = "mcp-layer"
 version = "0.1.0"
-source = "git+https://github.com/caniko/steampipe?rev=1544cba5fb25eabc5c8ff3fb9f415bbd536c7230#1544cba5fb25eabc5c8ff3fb9f415bbd536c7230"
+source = "git+https://github.com/caniko/steampipe?rev=bd25d71fa6d7cbba57f43d117c27e42025dfda89#bd25d71fa6d7cbba57f43d117c27e42025dfda89"
 dependencies = [
  "anyhow",
  "regex",
@@ -3432,7 +3432,7 @@ checksum = "d3ed9aa559d0d2d286dfe34f728d00232281da08f2c6a2eaf09f67f4899cfdb3"
 [[package]]
 name = "steampipe"
 version = "0.1.0"
-source = "git+https://github.com/caniko/steampipe?rev=1544cba5fb25eabc5c8ff3fb9f415bbd536c7230#1544cba5fb25eabc5c8ff3fb9f415bbd536c7230"
+source = "git+https://github.com/caniko/steampipe?rev=bd25d71fa6d7cbba57f43d117c27e42025dfda89#bd25d71fa6d7cbba57f43d117c27e42025dfda89"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

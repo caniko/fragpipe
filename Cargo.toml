@@ -35,8 +35,8 @@ tokio = { version = "1", features = ["rt", "macros", "io-std"], optional = true 
 toml = "0.8"
 toml1 = { package = "toml", version = "1.1", optional = true }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"], optional = true }
-mcp-layer = { git = "https://github.com/caniko/steampipe", rev = "1544cba5fb25eabc5c8ff3fb9f415bbd536c7230", optional = true }
-steampipe = { git = "https://github.com/caniko/steampipe", rev = "1544cba5fb25eabc5c8ff3fb9f415bbd536c7230", optional = true }
+mcp-layer = { git = "https://github.com/caniko/steampipe", rev = "bd25d71fa6d7cbba57f43d117c27e42025dfda89", optional = true }
+steampipe = { git = "https://github.com/caniko/steampipe", rev = "bd25d71fa6d7cbba57f43d117c27e42025dfda89", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
